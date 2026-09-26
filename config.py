@@ -1,0 +1,296 @@
+"""
+config.py — 환경변수 로드 + 전략 파라미터
+
+전략 요약 (MA5 돌파 역발상):
+  진입  5일선 아래에 머물던 KOSPI100 종목이 09:05 시점에 5일선 위로 올라오면 전액 매수
+  청산  +10% 익절 | 5일선 이탈 | 3거래일 보유 만료 — 먼저 닿는 것
+"""
+from __future__ import annotations
+
+import os
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# ══════════════════════════════════════════════════════════════
+# 한국투자증권 Open API — 실전 계좌 전용
+# ══════════════════════════════════════════════════════════════
+KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "").strip()
+KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "").strip()
+KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "").strip().replace("-", "")
+
+KIS_BASE_URL: str = "https://openapi.koreainvestment.com:9443"
+
+# 계좌번호 분해: 앞 8자리 종합계좌, 뒤 2자리 상품코드
+CANO: str = KIS_ACCOUNT_NO[:8]
+ACNT_PRDT_CD: str = KIS_ACCOUNT_NO[8:10] if len(KIS_ACCOUNT_NO) >= 10 else "01"
+
+# 2025년 NXT(대체거래소) 출범으로 주문 API 에 추가된 필수 필드.
+#   KRX  한국거래소만
+#   NXT  넥스트레이드만
+#   SOR  최선주문집행 (두 거래소 중 유리한 쪽으로 자동 라우팅)
+EXCG_ID_DVSN_CD: str = os.getenv("EXCG_ID_DVSN_CD", "KRX").strip().upper()
+
+# 조회 API 유량제한. 공지상 실전은 초당 20건이지만 실제로는 훨씬 빡빡하게 걸린다.
+# EGW00201 을 만나면 클라이언트가 스스로 더 낮춘다(core/kis/client.py).
+KIS_RATE_LIMIT_PER_SEC: float = _env_float("KIS_RATE_LIMIT_PER_SEC", 2.5)
+# 주문 API 는 초당 1건.
+KIS_ORDER_INTERVAL_SEC: float = _env_float("KIS_ORDER_INTERVAL_SEC", 1.1)
+
+# ══════════════════════════════════════════════════════════════
+# 실행 옵션
+# ══════════════════════════════════════════════════════════════
+DRY_RUN: bool = _env_bool("DRY_RUN", True)
+STATE_BACKEND: str = os.getenv("STATE_BACKEND", "local").strip().lower()
+TOKEN_CACHE: str = os.getenv("TOKEN_CACHE", "file").strip().lower()
+
+AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2").strip()
+DYNAMODB_TABLE: str = os.getenv("DYNAMODB_TABLE", "ma5-bot-state").strip()
+SSM_TOKEN_PATH: str = "/ma5-bot/kis/token"
+
+# Lambda 는 /tmp 만 쓰기 가능하다.
+DATA_DIR: str = os.getenv("DATA_DIR", "/tmp/ma5-bot" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "data")
+
+# ══════════════════════════════════════════════════════════════
+# 텔레그램
+# ══════════════════════════════════════════════════════════════
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+_raw_ids = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
+TELEGRAM_ALLOWED_CHAT_IDS: list[int] = [
+    int(x.strip()) for x in _raw_ids.split(",") if x.strip().lstrip("-").isdigit()
+]
+
+# ══════════════════════════════════════════════════════════════
+# 유니버스
+# ══════════════════════════════════════════════════════════════
+# 한투 종목마스터(kospi_code.mst)의 KOSPI100 플래그를 그대로 쓴다.
+UNIVERSE_FLAG: str = "KOSPI100"
+
+# 마스터파일에서 걸러낼 종목 (플래그가 'Y' 또는 '1' 이면 제외)
+EXCLUDE_FLAGS: tuple[str, ...] = (
+    "관리종목", "거래정지", "정리매매", "시장경고", "경고예고",
+    "불성실공시", "단기과열", "공매도과열", "이상급등", "우선주", "SPAC",
+)
+
+# 20일 평균 거래대금 하한 (원). 이 아래는 전액 매수 시 체결이 밀린다.
+MIN_TRADING_VALUE: float = _env_float("MIN_TRADING_VALUE", 3_000_000_000)
+
+# ══════════════════════════════════════════════════════════════
+# 진입 조건
+# ══════════════════════════════════════════════════════════════
+MA_PERIOD: int = 5
+
+# "5일선 아래에서 놀다가" 의 정의:
+#   최근 BELOW_LOOKBACK 거래일 중 종가가 그날의 MA5 아래였던 날이
+#   BELOW_MIN_DAYS 일 이상이어야 한다. (전일 종가 < 전일 MA5 는 별도 필수 조건)
+BELOW_LOOKBACK: int = _env_int("BELOW_LOOKBACK", 5)
+BELOW_MIN_DAYS: int = _env_int("BELOW_MIN_DAYS", 3)
+
+# 09:05 시점에 전일 종가 대비 이미 이만큼 올라 있으면 추격으로 보고 스킵.
+MAX_CHASE_PCT: float = _env_float("MAX_CHASE_PCT", 5.0)
+
+# ── 중장기 추세 필터: 골든크로스 상태 ─────────────────────────
+# 20일선이 60일선 위에 있는 종목만 산다. "종가 하나가 60일선 위" 보다 훨씬 안정적인
+# 추세 확인이다 — 하락추세 중 하루 반등으로 60일선을 잠깐 넘는 종목을 걸러낸다.
+USE_TREND_FILTER: bool = _env_bool("USE_TREND_FILTER", True)
+TREND_MA_SHORT: int = _env_int("TREND_MA_SHORT", 20)
+TREND_MA_LONG: int = _env_int("TREND_MA_LONG", 60)
+# 종가 > 60일선 도 함께 요구할지. 켜면 깊게 눌린 후보가 빠진다.
+TREND_REQUIRE_PRICE_ABOVE: bool = _env_bool("TREND_REQUIRE_PRICE_ABOVE", False)
+# 골든크로스 발생일 탐색 범위 (참고 정보용. 랭킹엔 안 쓴다 — 횡보장에선 크로스가 노이즈라서)
+CROSS_LOOKBACK: int = _env_int("CROSS_LOOKBACK", 30)
+
+# 후보가 여러 개일 때 1종목을 고르는 가중치 (각 지표를 후보 내 백분위로 환산 후 가중합)
+# "수렴 후 발산" 자리를 우선한다 — 이평선이 뭉치고 변동폭이 줄어든 곳에서 5일선을 뚫는 종목.
+#   squeeze      5·20·60일선 수렴도 — 최고−최저 / 주가. 작을수록 ↑ (1순위)
+#   contraction  ATR(5)/ATR(20) — 봉이 작아지며 조여드는 정도. 작을수록 ↑
+#   depth        전일 5일 이격도가 낮을수록 ↑ — 얼마나 깊이 눌렸다 올라오는가
+#   thrust       돌파 강도 — 현재가가 5일선을 얼마나 확실히 넘었는가
+#   trend        20일선/60일선 이격 — 추세 강도
+#   value        20일 평균 거래대금 — 전액 매수를 소화할 유동성
+RANK_WEIGHTS: dict[str, float] = {
+    "squeeze": _env_float("RANK_W_SQUEEZE", 1.0),
+    "contraction": _env_float("RANK_W_CONTRACTION", 0.7),
+    "depth": _env_float("RANK_W_DEPTH", 0.3),
+    "thrust": _env_float("RANK_W_THRUST", 0.5),
+    "trend": _env_float("RANK_W_TREND", 0.3),
+    "value": _env_float("RANK_W_VALUE", 0.3),
+}
+
+# ══════════════════════════════════════════════════════════════
+# 포지션 / 청산
+# ══════════════════════════════════════════════════════════════
+MAX_POSITIONS: int = _env_int("MAX_POSITIONS", 1)
+POSITION_PCT: float = _env_float("POSITION_PCT", 100.0)
+
+# 1순위 종목이 주가가 높아 1주도 못 사는 경우, 다음 순위로 내려가며 시도한다.
+# 0 이면 무제한. 신호 품질이 낮은 하위 후보까지 내려가는 게 싫으면 작게 잡는다.
+ENTRY_FALLBACK_MAX_RANK: int = _env_int("ENTRY_FALLBACK_MAX_RANK", 5)
+
+# ── 장중 재진입 ────────────────────────────────────────────
+# 09:05 스캔에서 1차 통과한 종목을 그날 캐시해두고, 슬롯이 비면 10분 감시 때마다
+# 그 종목들 현재가만 조회해 돌파 여부를 다시 본다 (일봉 재조회 없음).
+INTRADAY_REENTRY: bool = _env_bool("INTRADAY_REENTRY", True)
+# 재진입 허용 시간대 (HHMM, KST). 09:05 첫 진입 전 개장 직후 잡음 구간은 피하고,
+# 늦은 오후엔 사봐야 움직일 시간이 없다.
+REENTRY_START: str = os.getenv("REENTRY_START", "0910").strip()
+REENTRY_CUTOFF: str = os.getenv("REENTRY_CUTOFF", "1430").strip()
+# 당일 매수·매도한 종목은 그날 다시 안 산다. 익절 직후 같은 판정으로 더 비싸게 되사는 걸 막는다.
+NO_SAME_DAY_REENTRY: bool = _env_bool("NO_SAME_DAY_REENTRY", True)
+
+# ── 하루 일정 (HHMM, KST) ─────────────────────────────────
+PREP_TIME: str = os.getenv("PREP_TIME", "0840").strip()              # 일봉 받아 후보 계산·캐시
+PREMARKET_ENTRY_TIME: str = os.getenv("PREMARKET_ENTRY_TIME", "0850").strip()  # 프리마켓 판정 → 분할매수
+ENTRY_TIME: str = os.getenv("ENTRY_TIME", "0905").strip()            # 단일 진입 (분할이 없을 때 대체)
+
+# ── 프리마켓 분할 진입 ───────────────────────────────────
+# 08:50 에 프리마켓(NXT) 가격으로 돌파를 판정하고, 본장 전에 분할 매수를 걸어둔다.
+# 09:00 동시호가에서 시가가 기준가 이하면 그 자리에서 채워지고, 아니면 대기하다 눌릴 때 채워진다.
+PREMARKET_SPLIT_ENTRY: bool = _env_bool("PREMARKET_SPLIT_ENTRY", True)
+# 프리마켓 가격 조회에 쓸 시장코드 순서. UN=KRX+NXT 통합, NX=NXT. 둘 다 못 받으면 그 종목은 건너뛴다.
+PREMARKET_MARKET_CODES: list[str] = [
+    x.strip().upper() for x in os.getenv("PREMARKET_MARKET_CODES", "UN,NX").split(",") if x.strip()
+]
+# 선주문 건수. 1 이면 프리마켓가 지정가 한 건으로 동시호가에 참여한다 (기본).
+# 2 이상이면 아래로 SPLIT_STEP_ATR 간격으로 분할 — 수렴→발산(슈팅) 전략에선 권하지 않는다:
+# 진짜 슈팅은 안 눌려서 1차만 채워지고, 실패한 돌파는 눌리며 전량 채워진다 (맞을 땐 작게, 틀릴 땐 크게).
+SPLIT_TRANCHES: int = _env_int("SPLIT_TRANCHES", 1)
+# ── 장 초반 눌림 대기 ────────────────────────────────────
+# 수렴 구간은 이평선이 뭉쳐 있어 개장 직후 변동성이 크고, 특히 장 초반에 훅 빠지는 일이 잦다.
+# 그 자리가 진입 기회였다는 관찰에 따라, SPLIT_CANCEL_AT(10:00) 전의 모든 진입은
+# "기준가 + PREOPEN_OFFSET_ATR × ATR" 지정가를 걸어두고 눌림을 기다린다.
+#   08:50 선주문   기준가 = 프리마켓가. 동시호가부터 유효하므로 시가가 그 아래면 시가에 체결
+#   09:05 대체·재진입  기준가 = 그 시각 현재가
+# SPLIT_CANCEL_AT 까지 안 빠지면 취소하고 현재가로 한 번에 산다. 그 이후 진입은 처음부터 현재가.
+# ATR = 최근 14일 평균 하루 고저폭. 대형주는 주가의 2~3% 라 −0.5ATR ≈ −1.3%.
+# 5일선 − 1ATR 인 급이탈선보다 항상 위에 걸리므로, 눌림에 사자마자 급이탈로 나가는 구조는 아니다.
+PREOPEN_OFFSET_ATR: float = _env_float("PREOPEN_OFFSET_ATR", -0.5)
+# 기준가에 곱하는 % 보정. ATR 오프셋과 함께 적용된다. 보통 0.
+PREOPEN_CHASE_PCT: float = _env_float("PREOPEN_CHASE_PCT", 0.0)
+# 분할 간격 (ATR 배수). SPLIT_TRANCHES ≥ 2 일 때만 의미.
+SPLIT_STEP_ATR: float = _env_float("SPLIT_STEP_ATR", 0.5)
+# 눌림 대기 마감. 이 시각에 안 채워진 대기 주문을 취소하고, 슬롯이 비면 같은 틱에 현재가로 산다.
+# 보통 STOP_BLACKOUT_UNTIL 과 같게 둔다 — "장 초반 한 시간" 을 한 덩어리로 보는 것.
+SPLIT_CANCEL_AT: str = os.getenv("SPLIT_CANCEL_AT", "1000").strip()
+
+# ── 손절 발동 유예 ────────────────────────────────────────
+# 이 시각 전엔 5일선 급이탈·손절을 보지 않는다 (익절은 본다). 개장 직후 변동성 구간을
+# 분할매수로 받아내고 흔들림을 견디기 위한 것. 대신 갭다운은 이 시각까지 그대로 안고 간다.
+STOP_BLACKOUT_UNTIL: str = os.getenv("STOP_BLACKOUT_UNTIL", "1000").strip()
+
+TAKE_PROFIT_PCT: float = _env_float("TAKE_PROFIT_PCT", 3.0)
+# 장중 익절에 주는 여유폭 (ATR 배수). 손절선을 5일선 아래로 내린 것과 대칭.
+# 장중엔 +TAKE_PROFIT_PCT% 목표에서 이만큼 더 오른 자리에서만 판다. 종가엔 여유 없이 +3%.
+# 0 이면 장중에도 +3% 그대로 (예전 동작).
+TP_INTRADAY_ATR_BUFFER: float = _env_float("TP_INTRADAY_ATR_BUFFER", 0.5)
+MAX_HOLD_TRADING_DAYS: int = _env_int("MAX_HOLD_TRADING_DAYS", 3)
+
+# 5일선 이탈을 장중에도 감시할지, 종가(15:15)에만 확인할지.
+EXIT_ON_INTRADAY_MA5_BREAK: bool = _env_bool("EXIT_ON_INTRADAY_MA5_BREAK", True)
+# 장중 이탈 판정에 주는 여유폭 (ATR 배수). 5일선은 종가로 만드는 선이라 장중 틱과 그대로
+# 비교하면 하루 ±1~2% 잡음이 전부 '이탈' 로 보인다. 1.0 이면 5일선보다 1×ATR 아래로
+# 내려가야 장중 이탈로 친다 — 대형주 기준 2~3% 아래. 종가 판정은 여유 없이 5일선 그대로.
+# 0 이면 장중에도 5일선을 살짝만 밑돌아도 판다 (예전 동작 — 진입선과 청산선이 같아 잦은 손절).
+INTRADAY_MA5_ATR_BUFFER: float = _env_float("INTRADAY_MA5_ATR_BUFFER", 1.0)
+# ATR 을 못 구했을 때 쓰는 대체 여유폭 (5일선 대비 %)
+INTRADAY_MA5_PCT_BUFFER_FALLBACK: float = _env_float("INTRADAY_MA5_PCT_BUFFER_FALLBACK", 2.0)
+
+# 손절: 사용자 선택에 따라 기본 비활성. 5일선 이탈이 유일한 청산 방어선이다.
+USE_STOP_LOSS: bool = _env_bool("USE_STOP_LOSS", False)
+STOP_LOSS_PCT: float = _env_float("STOP_LOSS_PCT", 3.0)
+
+# ══════════════════════════════════════════════════════════════
+# 주문
+# ══════════════════════════════════════════════════════════════
+# 즉시 체결을 노리는 지정가 주문. 현재가보다 N틱 위(매수)/아래(매도)에 낸다.
+# 시장가를 쓰지 않는 이유: 전액 주문이라 호가가 얇으면 슬리피지를 그대로 맞는다.
+ENTRY_LIMIT_TICKS: int = _env_int("ENTRY_LIMIT_TICKS", 2)
+EXIT_LIMIT_TICKS: int = _env_int("EXIT_LIMIT_TICKS", 2)
+# 익절은 급할 게 없으므로 더 얕게 낸다. 3% 목표에서 슬리피지 0.1~0.2% 는 무시 못 할 크기다.
+TP_EXIT_LIMIT_TICKS: int = _env_int("TP_EXIT_LIMIT_TICKS", 1)
+
+# 미체결 주문을 이 시각에 정리한다 (HHMM, KST)
+CANCEL_PENDING_AT: str = os.getenv("CANCEL_PENDING_AT", "1515").strip()
+
+ORD_DVSN_LIMIT: str = "00"   # 지정가
+ORD_DVSN_MARKET: str = "01"  # 시장가
+
+
+# ══════════════════════════════════════════════════════════════
+def validate() -> list[str]:
+    """설정 검증. 치명적 문제의 목록을 반환한다 (빈 리스트면 정상)."""
+    problems: list[str] = []
+
+    if not KIS_APP_KEY:
+        problems.append("KIS_APP_KEY 가 비어 있다")
+    if not KIS_APP_SECRET:
+        problems.append("KIS_APP_SECRET 가 비어 있다")
+    if len(KIS_ACCOUNT_NO) != 10:
+        problems.append(
+            f"KIS_ACCOUNT_NO 는 숫자 10자리여야 한다 (종합계좌 8 + 상품코드 2). 현재 {len(KIS_ACCOUNT_NO)}자리"
+        )
+    if EXCG_ID_DVSN_CD not in ("KRX", "NXT", "SOR"):
+        problems.append(f"EXCG_ID_DVSN_CD 값이 잘못됨: {EXCG_ID_DVSN_CD} (KRX/NXT/SOR)")
+    if STATE_BACKEND not in ("local", "dynamodb"):
+        problems.append(f"STATE_BACKEND 값이 잘못됨: {STATE_BACKEND}")
+    if not 0 < POSITION_PCT <= 100:
+        problems.append(f"POSITION_PCT 는 0 초과 100 이하: {POSITION_PCT}")
+    if BELOW_MIN_DAYS > BELOW_LOOKBACK:
+        problems.append("BELOW_MIN_DAYS 가 BELOW_LOOKBACK 보다 클 수 없다")
+
+    return problems
+
+
+def summary() -> str:
+    """현재 설정 요약 (텔레그램/로그용)."""
+    mode = "모의주문(DRY_RUN)" if DRY_RUN else "실주문"
+    stop = f"{STOP_LOSS_PCT}%" if USE_STOP_LOSS else "없음"
+    if INTRADAY_REENTRY:
+        reentry = (f"장중 10분마다 ({REENTRY_START[:2]}:{REENTRY_START[2:]}"
+                   f"~{REENTRY_CUTOFF[:2]}:{REENTRY_CUTOFF[2:]}, 당일 매매 종목 제외)")
+    else:
+        reentry = "09:05 1회"
+    if PREMARKET_SPLIT_ENTRY:
+        kind = (f"눌림 대기 1건 (기준가 {PREOPEN_OFFSET_ATR:+g}ATR)" if SPLIT_TRANCHES <= 1
+                else f"분할 {SPLIT_TRANCHES}건 ({PREOPEN_OFFSET_ATR:+g}ATR부터 −{SPLIT_STEP_ATR:g}ATR 간격)")
+        entry = (f"{PREMARKET_ENTRY_TIME[:2]}:{PREMARKET_ENTRY_TIME[2:]} 프리마켓 판정 → {kind} | "
+                 f"{SPLIT_CANCEL_AT[:2]}:{SPLIT_CANCEL_AT[2:]}까지 안 빠지면 취소 후 현재가 매수")
+    else:
+        entry = f"{ENTRY_TIME[:2]}:{ENTRY_TIME[2:]} 단일 진입"
+    blackout = f"{STOP_BLACKOUT_UNTIL[:2]}:{STOP_BLACKOUT_UNTIL[2:]}부터"
+    return (
+        f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
+        f"일정: {entry}\n"
+        f"급이탈·손절 발동: {blackout} (그 전엔 익절만)\n"
+        f"유니버스: {UNIVERSE_FLAG} | 보유: {MAX_POSITIONS}종목 × {POSITION_PCT:.0f}%\n"
+        f"진입: {MA_PERIOD}일선 상향돌파 (직전 {BELOW_LOOKBACK}일 중 {BELOW_MIN_DAYS}일 이상 아래)\n"
+        f"청산: 익절 +{TAKE_PROFIT_PCT:g}%(장중 +{TP_INTRADAY_ATR_BUFFER:g}ATR) | "
+        f"{MA_PERIOD}일선 이탈(장중 −{INTRADAY_MA5_ATR_BUFFER:g}ATR) | {MAX_HOLD_TRADING_DAYS}거래일 | 손절 {stop}\n"
+        f"추세: {TREND_MA_SHORT}일선 > {TREND_MA_LONG}일선 | 랭킹: 이평선 수렴 + 변동폭 축소 우선\n"
+        f"재진입: {reentry}"
+    )
