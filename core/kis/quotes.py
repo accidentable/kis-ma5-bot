@@ -175,6 +175,77 @@ def get_daily_history(ticker: str, bars: int = 260) -> list[dict]:
     return out[-bars:]
 
 
+TR_VOLUME_RANK = "FHPST01710000"
+_PATH_VOLUME_RANK = "/uapi/domestic-stock/v1/quotations/volume-rank"
+TR_INDEX_DAILY = "FHKUP03500100"
+_PATH_INDEX_DAILY = "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice"
+
+
+def get_value_rank(market: str = "0000") -> list[dict]:
+    """
+    당일 거래대금 순위 (최대 30종목). market: 0000 전체 / 0001 코스피 / 1001 코스닥.
+    반환: [{ticker, name, price, change_pct, value}] — 순위 순서 그대로.
+    """
+    data = client.get(
+        _PATH_VOLUME_RANK, TR_VOLUME_RANK,
+        {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": market,
+            "FID_DIV_CLS_CODE": "1",            # 보통주
+            "FID_BLNG_CLS_CODE": "3",           # 거래금액순
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_INPUT_DATE_1": "",
+        },
+    )
+    out = []
+    for r in data.get("output") or []:
+        t = str(r.get("mksc_shrn_iscd", "")).strip()
+        if not t:
+            continue
+        out.append({
+            "ticker": t,
+            "name": str(r.get("hts_kor_isnm", "")).strip(),
+            "price": _f(r.get("stck_prpr")),
+            "change_pct": _f(r.get("prdy_ctrt")),
+            "value": _f(r.get("acml_tr_pbmn")),
+        })
+    return out
+
+
+def get_index_daily(code: str = "1001", bars: int = 120) -> list[dict]:
+    """업종지수 일봉 (날짜 오름차순). code: 0001 코스피 / 1001 코스닥. [{date, close}]"""
+    by_date: dict[str, float] = {}
+    end = date.today()
+    for _ in range(5):
+        start = end - timedelta(days=140)
+        data = client.get(
+            _PATH_INDEX_DAILY, TR_INDEX_DAILY,
+            {
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D",
+            },
+        )
+        got = 0
+        for r in data.get("output2") or []:
+            d = str(r.get("stck_bsop_date", "")).strip()
+            c = _f(r.get("bstp_nmix_prpr"))
+            if d and c > 0:
+                by_date[d] = c
+                got += 1
+        if got == 0 or len(by_date) >= bars:
+            break
+        end = min(start, datetime.strptime(min(by_date), "%Y%m%d").date()) - timedelta(days=1)
+    return [{"date": k, "close": by_date[k]} for k in sorted(by_date)][-bars:]
+
+
 def _holiday_rows(base: date) -> list[dict]:
     return client.paginate(
         _PATH_HOLIDAY, TR_HOLIDAY,

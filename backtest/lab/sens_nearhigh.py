@@ -31,8 +31,10 @@ def main():
     L.append("| 시장 (거래대금 30억↑ 동일가중, 비용 전) | " + " | ".join(
         fmt(np.mean([mk[s + 20] / mk[s - 1] - 1 for s in ss])) for ss in periods.values()) + " |")
 
-    def run(name, rank_max=200, hi=None, k=2, r=21, mom=True, max_raw=None):
+    def run(name, rank_max=200, hi=None, k=2, r=21, mom=True, max_raw=None, max_gain=None):
         U = base & (I["caprank"] <= rank_max) & ((m.raw <= max_raw) if max_raw else True)
+        if max_gain:
+            U = U & (I["max20"] < max_gain)
         hh = I["hi250"] if hi is None else hi
         sc = where(U & ((I["ret60"] > 0) if mom else True), c / hh)
         sp = E.Spec(name, sc, "rotate", r=r).prepare()
@@ -52,6 +54,9 @@ def main():
     run("3종목", k=3)
     run("10일마다 교체", r=10)
     run("30만원 이하만 순위 (실전 봇 방식)", max_raw=300_000)
+    # 아래 둘은 테마주 조사(theme.py) 뒤에 추가한 것 — 급등주는 다음 날 장중에 되밀린다는 관찰, MAX 효과 연구
+    run("30만원 이하 + 20일 내 +15%↑ 급등일 제외", max_raw=300_000, max_gain=0.15)
+    run("30만원 이하 + 20일 내 +10%↑ 급등일 제외 (실전 봇 기본값)", max_raw=300_000, max_gain=0.10)
     with open(os.path.join(OUT, "lab_sens_nearhigh.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(L) + "\n")
 

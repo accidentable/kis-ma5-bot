@@ -179,6 +179,7 @@ class Spec:
     tp: float = 0.0
     regime: bool = False
     exit_next_open: bool = False       # True 면 청산 신호 다음 날 시가에 판다 (1일 보유 전략용)
+    entry_at_close: bool = False       # True 면 그날 종가 기준 신호로 그날 종가(장마감 동시호가)에 사고 다음 날 시가에 판다
     params: dict = field(default_factory=dict)
     top: np.ndarray | None = None      # 날짜별 상위 후보 인덱스 캐시
 
@@ -268,13 +269,13 @@ def run_month(m: Market, sp: Spec, s: int, k: int, capital: float = CAPITAL, len
                         if len(pos) >= k:
                             break
                         buy(int(j), t)
-        elif on:
+        elif on and not sp.entry_at_close:
             for j in sp.top[sig]:
                 if len(pos) >= k:
                     break
                 buy(int(j), t)
         # ③ 장중 손절·익절, 종가 청산
-        for j in list(pos):
+        for j in list(pos) if not sp.entry_at_close else []:
             p = pos[j]
             o, h, l, c = m.o[t, j], m.h[t, j], m.l[t, j], m.c[t, j]
             if not (c > 0):
@@ -299,6 +300,23 @@ def run_month(m: Market, sp: Spec, s: int, k: int, capital: float = CAPITAL, len
                         pend_exit.add(j)
                     else:
                         sell(pos.pop(j), t, float(c))
+        # ③' 종가 베팅: 오늘 종가 신호로 종가에 사고, 다음 날 시가에 판다 (마지막 날은 안 산다)
+        if sp.entry_at_close and t < e and ((not sp.regime) or bool(I["mkt_on"][t])):
+            for j in sp.top[t]:
+                j = int(j)
+                if len(pos) >= k:
+                    break
+                if j in pos or not (m.c[t, j] > 0):
+                    continue
+                rc = float(m.raw[t, j])
+                px = rc * (1 + slip(rc))
+                qty = int(min(cash, slot) / (px * (1 + FEE)))
+                if qty < 1:
+                    continue
+                cost = qty * px * (1 + FEE)
+                cash -= cost
+                pos[j] = Pos(j, qty, float(m.c[t, j]) * (1 + slip(rc)) * (1 + FEE), cost, t, float(m.c[t, j]))
+                pend_exit.add(j)
     # ④ 마지막 날 종가에 전부 판다
     for j in list(pos):
         p = pos.pop(j)

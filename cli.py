@@ -6,7 +6,8 @@ cli.py — 로컬 실행 진입점
   python cli.py account    계좌 상품코드 진단 (APBK1271 오류 시)
   python cli.py universe   KOSPI100 유니버스 확인
   python cli.py scan       시그널 스캔 / near_high 는 오늘 순위 (주문 없음)
-  python cli.py prep       개장 전 준비 1회 (near_high: 순위 계산)
+  python cli.py prep       개장 전 준비 1회 (near_high: 순위 계산 / closebet: 시가 매도)
+  (closebet 은 entry = 종가 매수, monitor = 시가 미체결 점검, close = 리포트)
   python cli.py entry      09:05 진입 작업 1회 실행
   python cli.py monitor    장중 감시 1회 실행
   python cli.py close      마감 정리 1회 실행
@@ -237,6 +238,14 @@ def cmd_universe(args) -> int:
 def cmd_scan(args) -> int:
     """수동 스캔. 항상 일봉을 새로 받는다 — 당일 캐시가 옛 코드로 만들어졌을 수 있다."""
     import config
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        cands, stats = closebet.candidates()
+        print(closebet.regime_on()[1])
+        print(f"거래대금 순위 {stats.get('rank')} → 후보 {len(cands)} | 탈락 {stats.get('rejects')}")
+        for c in cands:
+            print(f"  {c['name']}({c['ticker']}) {c['price']:,.0f}원 {c['change_pct']:+.1f}% IBS {c['ibs']:.2f} 거래대금 {c['value'] / 1e8:,.0f}억")
+        return 0
     if config.STRATEGY == "near_high":
         from jobs import rotation
         ranked, stats = rotation.build_ranking()
@@ -250,6 +259,10 @@ def cmd_scan(args) -> int:
 
 def cmd_prep(args) -> int:
     import config
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.sell_open(force=args.force))
+        return 0
     if config.STRATEGY == "near_high":
         from jobs import rotation
         print(rotation.prep(force=args.force))
@@ -261,6 +274,10 @@ def cmd_prep(args) -> int:
 
 def cmd_entry(args) -> int:
     import config
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.buy_close(force=args.force))
+        return 0
     if config.STRATEGY == "near_high":
         from jobs import rotation
         print(rotation.entry(force=args.force))
@@ -272,6 +289,10 @@ def cmd_entry(args) -> int:
 
 def cmd_monitor(args) -> int:
     import config
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.check_open(force=args.force))
+        return 0
     if config.STRATEGY == "near_high":
         from jobs import rotation
         print(rotation.monitor(force=args.force))
@@ -283,6 +304,10 @@ def cmd_monitor(args) -> int:
 
 def cmd_close(args) -> int:
     import config
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.report(force=args.force))
+        return 0
     if config.STRATEGY == "near_high":
         from jobs import rotation
         print(rotation.close(force=args.force))
@@ -327,7 +352,16 @@ def cmd_serve(args) -> int:
     def _hm(hhmm: str) -> tuple[int, int]:
         return int(hhmm[:2]), int(hhmm[2:])
 
-    if config.STRATEGY == "near_high":
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        for job_id, name, fn, hhmm in (("cb_sell", "시가 매도", closebet.sell_open, config.CB_SELL_TIME),
+                                        ("cb_check", "시가 미체결 점검", closebet.check_open, config.CB_CHECK_TIME),
+                                        ("cb_buy", "종가 매수", closebet.buy_close, config.CB_BUY_TIME),
+                                        ("cb_report", "마감 리포트", closebet.report, "1540")):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
+    elif config.STRATEGY == "near_high":
         from jobs import rotation
         for job_id, name, fn, hhmm in (("prep", "순위 계산", rotation.prep, config.NH_PREP_TIME),
                                         ("entry", "교체 매매", rotation.entry, config.NH_ENTRY_TIME)):
@@ -384,7 +418,7 @@ def _schedule_ma5(sched, _wrap, _hm) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="한투 OpenAPI 자동매매 봇 (STRATEGY=near_high | ma5)")
+    parser = argparse.ArgumentParser(description="한투 OpenAPI 자동매매 봇 (STRATEGY=near_high | closebet | ma5)")
     parser.add_argument("--force", action="store_true", help="휴장일 체크를 건너뛴다")
     parser.add_argument("--reset-webhook", action="store_true",
                         help="chatid 실행 시 기존 텔레그램 웹훅을 해제한다")

@@ -6,6 +6,7 @@ config.py — 환경변수 로드 + 전략 파라미터
                     코스피+코스닥 시총 상위 200 중 '전일 종가 / 250일 최고가' 가 가장 높은 2종목을
                     반반 사서 21거래일 들고, 21거래일마다 다시 골라 교체한다. 손절·익절 없음.
                     근거: backtest/results/strategy_report5_*.md (KRX 전종목 16년, 상장폐지 포함)
+  closebet          종가 베팅 (선택형): 강세 마감 테마주를 종가에 사서 다음 날 시가에 판다 — 검증 미통과
   ma5               예전 MA5 돌파 역발상 (5일선 아래 → 위 돌파 매수, 익절 | 5일선 이탈 | 3거래일)
 """
 from __future__ import annotations
@@ -101,6 +102,9 @@ NH_HIGH_LOOKBACK: int = _env_int("NH_HIGH_LOOKBACK", 250)      # 신고가 기�
 NH_MOM_DAYS: int = _env_int("NH_MOM_DAYS", 60)                 # 이 기간 수익률 > 0 인 종목만
 NH_MIN_PRICE: float = _env_float("NH_MIN_PRICE", 1000)         # 주가 하한 (원)
 NH_MIN_VALUE: float = _env_float("NH_MIN_VALUE", 1_000_000_000)  # 20일 평균 거래대금 하한 (원)
+# 최근 20거래일 안에 하루 이 % 이상 오른 날이 있으면 뺀다 (급등 테마주 회피). 0 이면 끔.
+# 16년 백테스트: 한 달 평균은 비슷하고, 한 달 −10% 이하 확률이 모든 구간에서 줄었다 (7→5, 8→5, 13→6, 16→5%).
+NH_MAX_DAILY_GAIN_PCT: float = _env_float("NH_MAX_DAILY_GAIN_PCT", 10.0)
 NH_CANDIDATES: int = _env_int("NH_CANDIDATES", 15)             # 순위표에 남길 후보 수 (비싸서 못 사면 다음 순위)
 # 교체일이 아닌 날에도 빈 슬롯이 있으면 그날 순위로 채운다 (매수 실패·수동 매도 뒤 복구용)
 NH_REFILL: bool = _env_bool("NH_REFILL", True)
@@ -109,6 +113,21 @@ NH_ENTRY_TIME: str = os.getenv("NH_ENTRY_TIME", "0905").strip()  # 교체 매도
 NH_BUY_CUTOFF: str = os.getenv("NH_BUY_CUTOFF", "1430").strip()  # 이 시각 이후엔 빈 슬롯 매수 재시도 안 함
 # 손절 (%). 0 이면 없음 — 백테스트는 손절 없이 검증했다. 켜면 검증 밖의 규칙이 된다.
 NH_STOP_LOSS_PCT: float = _env_float("NH_STOP_LOSS_PCT", 0.0)
+
+# ── 종가 베팅 (STRATEGY=closebet, 선택형 — 기본 아님) ───────────
+# 당일 강세 마감 테마주(거래대금 상위)를 장마감 동시호가에 사서 다음 날 장전 동시호가에 판다.
+# 16년 백테스트에서 기대값 0 근처 (IS +0.4%, VAL −0.8%, TEST +0.3% / 한 달). 검증을 통과하지 못했다.
+CB_SLOTS: int = _env_int("CB_SLOTS", 2)
+CB_RANK_TOP: int = _env_int("CB_RANK_TOP", 30)                 # 당일 거래대금 순위 N 위 안
+CB_MIN_CHANGE_PCT: float = _env_float("CB_MIN_CHANGE_PCT", 5.0)   # 당일 등락률 하한
+CB_MAX_CHANGE_PCT: float = _env_float("CB_MAX_CHANGE_PCT", 29.0)  # 이상은 상한가 근처라 못 산다
+CB_MIN_IBS: float = _env_float("CB_MIN_IBS", 0.9)               # (현재가−저가)/(고가−저가) — 고가 근처 마감
+CB_MIN_VALUE: float = _env_float("CB_MIN_VALUE", 5_000_000_000)   # 당일 거래대금 하한 (원)
+CB_REGIME: bool = _env_bool("CB_REGIME", True)                  # 코스닥지수가 100일선 위일 때만
+CB_BUY_TICKS: int = _env_int("CB_BUY_TICKS", 5)                 # 장마감 동시호가 매수 지정가 = 현재가 + N틱
+CB_SELL_TIME: str = os.getenv("CB_SELL_TIME", "0845").strip()   # 장전 동시호가 매도
+CB_CHECK_TIME: str = os.getenv("CB_CHECK_TIME", "0905").strip() # 안 팔린 것 현재가 매도
+CB_BUY_TIME: str = os.getenv("CB_BUY_TIME", "1521").strip()     # 장마감 동시호가(15:20~15:30) 매수
 
 # ══════════════════════════════════════════════════════════════
 # 유니버스 (STRATEGY=ma5)
@@ -287,8 +306,8 @@ def validate() -> list[str]:
         problems.append(f"POSITION_PCT 는 0 초과 100 이하: {POSITION_PCT}")
     if BELOW_MIN_DAYS > BELOW_LOOKBACK:
         problems.append("BELOW_MIN_DAYS 가 BELOW_LOOKBACK 보다 클 수 없다")
-    if STRATEGY not in ("near_high", "ma5"):
-        problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/ma5)")
+    if STRATEGY not in ("near_high", "ma5", "closebet"):
+        problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/closebet/ma5)")
     if NH_SLOTS < 1 or NH_HOLD_DAYS < 1:
         problems.append("NH_SLOTS, NH_HOLD_DAYS 는 1 이상")
 
@@ -298,13 +317,24 @@ def validate() -> list[str]:
 def summary() -> str:
     """현재 설정 요약 (텔레그램/로그용)."""
     mode = "모의주문(DRY_RUN)" if DRY_RUN else "실주문"
+    if STRATEGY == "closebet":
+        return (
+            f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
+            f"전략: 종가 베팅 (테마주, 선택형 — 백테스트 기대값 0 근처)\n"
+            f"매수: {CB_BUY_TIME[:2]}:{CB_BUY_TIME[2:]} 장마감 동시호가 — 거래대금 {CB_RANK_TOP}위 안, "
+            f"+{CB_MIN_CHANGE_PCT:g}~{CB_MAX_CHANGE_PCT:g}%, IBS ≥ {CB_MIN_IBS:g}, 거래대금 {CB_MIN_VALUE / 1e8:,.0f}억↑"
+            + (", 코스닥 100일선 위" if CB_REGIME else "") + f" | {CB_SLOTS}종목\n"
+            f"매도: 다음 날 {CB_SELL_TIME[:2]}:{CB_SELL_TIME[2:]} 장전 동시호가 (시가), "
+            f"{CB_CHECK_TIME[:2]}:{CB_CHECK_TIME[2:]} 남은 것 현재가 매도"
+        )
     if STRATEGY == "near_high":
         stop = f"{NH_STOP_LOSS_PCT:g}%" if NH_STOP_LOSS_PCT > 0 else "없음"
         return (
             f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
             f"전략: 52주 신고가 근접 로테이션\n"
             f"유니버스: 코스피+코스닥 시총 상위 {NH_UNIVERSE_TOP} (주가 {NH_MIN_PRICE:,.0f}원↑, "
-            f"거래대금 {NH_MIN_VALUE / 1e8:,.0f}억↑, {NH_MOM_DAYS}일 수익률 > 0)\n"
+            f"거래대금 {NH_MIN_VALUE / 1e8:,.0f}억↑, {NH_MOM_DAYS}일 수익률 > 0"
+            + (f", 20일 내 +{NH_MAX_DAILY_GAIN_PCT:g}%↑ 급등일 없음" if NH_MAX_DAILY_GAIN_PCT > 0 else "") + ")\n"
             f"순위: 전일 종가 / {NH_HIGH_LOOKBACK}일 최고가 (높을수록 먼저)\n"
             f"보유: {NH_SLOTS}종목 균등 | {NH_HOLD_DAYS}거래일마다 교체 | 손절 {stop}\n"
             f"일정: {NH_PREP_TIME[:2]}:{NH_PREP_TIME[2:]} 순위 계산 → {NH_ENTRY_TIME[:2]}:{NH_ENTRY_TIME[2:]} 교체 매매 "

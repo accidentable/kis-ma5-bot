@@ -28,6 +28,9 @@ HELP = """자동매매 봇 (/config 로 전략 확인)
 
 
 def _cmd_status() -> str:
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        return closebet.status_text()
     if config.STRATEGY == "near_high":
         from jobs import rotation
         return rotation.status_text()
@@ -71,6 +74,12 @@ def _cmd_status() -> str:
 
 
 def _cmd_scan() -> str:
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        cands, stats = closebet.candidates()
+        head = f"🌙 종가 베팅 후보 (지금 가격 기준) — {closebet.regime_on()[1]}\n거래대금 순위 {stats.get('rank', 0)} → 후보 {len(cands)}"
+        return head + "".join(f"\n· {c['name']}({c['ticker']}) {c['change_pct']:+.1f}% IBS {c['ibs']:.2f} "
+                              f"{c['value'] / 1e8:,.0f}억" for c in cands[:10])
     if config.STRATEGY == "near_high":
         from jobs import rotation
         ranked, stats = rotation.load_ranking(build_if_missing=False)

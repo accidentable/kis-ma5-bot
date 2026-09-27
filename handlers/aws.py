@@ -36,12 +36,20 @@ def _guard(name: str, fn, event):
         return _ok({"job": name, "error": f"{type(e).__name__}: {e}"})
 
 
+def _closebet() -> bool:
+    import config
+    return config.STRATEGY == "closebet"
+
+
 def _near_high() -> bool:
     import config
     return config.STRATEGY == "near_high"
 
 
 def prep_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("시가 매도", closebet.sell_open, event)
     if _near_high():
         from jobs import rotation
         return _guard("순위 계산", rotation.prep, event)
@@ -57,6 +65,9 @@ def premarket_handler(event, context):
 
 
 def entry_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("시가 미체결 점검", closebet.check_open, event)
     if _near_high():
         from jobs import rotation
         return _guard("교체 매매", rotation.entry, event)
@@ -65,6 +76,8 @@ def entry_handler(event, context):
 
 
 def monitor_handler(event, context):
+    if _closebet():
+        return _ok({"job": "감시", "skipped": "closebet 은 장중 감시 없음"})
     if _near_high():
         from jobs import rotation
         return _guard("감시", rotation.monitor, event)
@@ -73,6 +86,9 @@ def monitor_handler(event, context):
 
 
 def close_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("종가 매수", closebet.buy_close, event)
     if _near_high():
         from jobs import rotation
         return _guard("마감", rotation.close, event)

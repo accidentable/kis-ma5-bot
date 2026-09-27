@@ -32,6 +32,7 @@ config.NH_MIN_PRICE = 1000
 config.NH_MIN_VALUE = 1_000_000_000
 config.NH_REFILL = True
 config.NH_STOP_LOSS_PCT = 0.0
+config.NH_MAX_DAILY_GAIN_PCT = 10.0
 config.ENTRY_LIMIT_TICKS = 2
 
 from core import nearhigh, state                 # noqa: E402
@@ -172,6 +173,13 @@ def main() -> int:
     check("60일 수익률 ≤ 0 탈락", not by["000040"].eligible and "수익률" in by["000040"].reject, by["000040"].reject)
     check("거래대금 부족 탈락", not by["000050"].eligible and "거래대금" in by["000050"].reject, by["000050"].reject)
     check("일봉 250개 미만 탈락", not by["000060"].eligible and "일봉 부족" in by["000060"].reject, by["000060"].reject)
+    jump = series(40_000, 0.99)
+    jump[-5]["close"] = jump[-6]["close"] * 1.12          # 5일 전에 하루 +12%
+    pj = nearhigh.evaluate("000099", "급등이력", jump, marcap=1)
+    check("20일 내 +10%↑ 급등일 있으면 탈락 (테마주 회피)", not pj.eligible and "급등이력" in pj.reject, pj.reject)
+    config.NH_MAX_DAILY_GAIN_PCT = 0
+    check("NH_MAX_DAILY_GAIN_PCT=0 이면 필터 끔", nearhigh.evaluate("000099", "급등이력", jump, marcap=1).eligible)
+    config.NH_MAX_DAILY_GAIN_PCT = 10.0
 
     print("\n── 첫날: 준비 → 첫 매수 ─────────────────────────")
     r = rotation.prep(force=True)

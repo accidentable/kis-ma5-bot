@@ -4,6 +4,7 @@ core/nearhigh.py — 52주 신고가 근접 로테이션 (STRATEGY=near_high)
 규칙 (백테스트 backtest/lab 과 같은 정의)
   유니버스  코스피+코스닥 보통주 시총 상위 NH_UNIVERSE_TOP (관리·정지·경고 종목 제외)
   필터      전일 종가 ≥ NH_MIN_PRICE, 20일 평균 거래대금 ≥ NH_MIN_VALUE, NH_MOM_DAYS 일 수익률 > 0,
+            최근 20거래일에 하루 +NH_MAX_DAILY_GAIN_PCT% 이상 오른 날이 없을 것 (급등 테마주 회피),
             일봉이 NH_HIGH_LOOKBACK 개 이상 (신고가를 정의할 수 있는 종목만)
   점수      전일 종가 / 최근 NH_HIGH_LOOKBACK 거래일 최고가 (전일 포함). 1 이면 신고가, 높을수록 먼저
   보유      상위 NH_SLOTS 종목을 계좌 1/NH_SLOTS 씩. 비싸서 1주도 못 사면 다음 순위
@@ -35,6 +36,7 @@ class Pick:
     high_n: float = 0.0          # 최근 N 거래일 최고가
     score: float = 0.0           # prev_close / high_n
     mom: float = 0.0             # NH_MOM_DAYS 일 수익률
+    max_gain: float = 0.0        # 최근 20거래일 최대 일간 상승률
     avg_value: float = 0.0       # 20일 평균 거래대금
     bars: int = 0
     eligible: bool = False
@@ -54,12 +56,16 @@ def evaluate(ticker: str, name: str, candles: list[dict], *, market: str = "", m
     p.score = p.prev_close / p.high_n if p.high_n > 0 else 0.0
     p.mom = closes[-1] / closes[-1 - m] - 1 if closes[-1 - m] > 0 else 0.0
     p.avg_value = sum(c["value"] for c in candles[-20:]) / 20
+    p.max_gain = max(closes[i] / closes[i - 1] - 1 for i in range(len(closes) - 20, len(closes)) if closes[i - 1] > 0)
+    cap = config.NH_MAX_DAILY_GAIN_PCT / 100
     if p.prev_close < config.NH_MIN_PRICE:
         p.reject = f"주가 {p.prev_close:,.0f}원 < {config.NH_MIN_PRICE:,.0f}"
     elif p.avg_value < config.NH_MIN_VALUE:
         p.reject = f"거래대금 {p.avg_value / 1e8:,.1f}억 부족"
     elif p.mom <= 0:
         p.reject = f"{m}일 수익률 {p.mom * 100:+.1f}% ≤ 0"
+    elif cap > 0 and p.max_gain >= cap:
+        p.reject = f"급등이력 20일 내 하루 {p.max_gain * 100:+.1f}%"
     else:
         p.eligible = True
     return p
