@@ -99,11 +99,17 @@ def _marcap(v) -> float:
         return 0.0
 
 
-def build(cache_path: str) -> dict[str, list[dict]]:
-    """{"KOSPI100": [...], "KOSPI200": [...], "KOSDAQ150": [...]} — 각 항목은 {ticker, name, market}."""
+def build(cache_path: str, need_all: bool = False) -> dict[str, list[dict]]:
+    """{"KOSPI100": [...], "KOSPI200": [...], "KOSDAQ150": [...], "ALL": [...]} — 각 항목은 {ticker, name, market}.
+
+    ALL 은 코스피·코스닥 보통주 전체 (ETF·ETN·리츠·스팩·우선주 제외). 생존편향을 줄이려고 쓴다 —
+    지수 구성종목은 '최근에 오른 종목'이 들어와 있어서 과거로 돌리면 결과가 부풀려진다.
+    그래도 상장폐지 종목은 마스터에 없어서 빠진다 (편향이 줄 뿐 사라지진 않는다)."""
     if os.path.exists(cache_path):
         with open(cache_path, encoding="utf-8") as f:
-            return json.load(f)
+            cached = json.load(f)
+        if not need_all or "ALL" in cached:
+            return cached
 
     kospi = live_universe._parse_mst(live_universe._download_mst())
     kosdaq = _parse(_download(KOSDAQ_URL), _KOSDAQ_TAIL, _KOSDAQ_WIDTHS, _KOSDAQ_NAMES)
@@ -111,12 +117,14 @@ def build(cache_path: str) -> dict[str, list[dict]]:
     def ok_code(c: str) -> bool:
         return len(c) == 6 and c.isalnum()
 
-    k100, k200, q150 = [], [], []
+    k100, k200, q150, every = [], [], [], []
     for r in kospi:
         code = r["종목코드"]
         if not ok_code(code) or _flag(r.get("우선주")) or _flag(r.get("SPAC")):
             continue
         item = {"ticker": code, "name": r["종목명"], "market": "KOSPI", "marcap": _marcap(r.get("시가총액"))}
+        if r.get("그룹코드") == "ST" and not _flag(r.get("ETP")) and code.endswith("0"):
+            every.append(item)
         if _flag(r.get("KOSPI100")):
             k100.append(item)
         if str(r.get("KOSPI200섹터업종", "0")).strip() not in ("", "0"):
@@ -125,13 +133,17 @@ def build(cache_path: str) -> dict[str, list[dict]]:
         code = r["종목코드"]
         if not ok_code(code) or _flag(r.get("SPAC")):
             continue
+        item = {"ticker": code, "name": r["종목명"], "market": "KOSDAQ", "marcap": _marcap(r.get("시가총액"))}
         if _flag(r.get("KOSDAQ150")):
-            q150.append({"ticker": code, "name": r["종목명"], "market": "KOSDAQ",
-                         "marcap": _marcap(r.get("시가총액"))})
+            q150.append(item)
+        if (r.get("증권그룹구분코드") == "ST" and not _flag(r.get("ETP")) and not _flag(r.get("우선주"))
+                and code.endswith("0")):
+            every.append(item)
 
-    out = {"KOSPI100": k100, "KOSPI200": k200, "KOSDAQ150": q150}
+    out = {"KOSPI100": k100, "KOSPI200": k200, "KOSDAQ150": q150, "ALL": every}
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
-    logger.info("유니버스: KOSPI100 %d / KOSPI200 %d / KOSDAQ150 %d", len(k100), len(k200), len(q150))
+    logger.info("유니버스: KOSPI100 %d / KOSPI200 %d / KOSDAQ150 %d / 전체 보통주 %d",
+                len(k100), len(k200), len(q150), len(every))
     return out

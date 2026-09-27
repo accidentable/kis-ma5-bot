@@ -30,7 +30,7 @@ from statistics import fmean, pstdev
 from typing import Callable, Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SNAPSHOT = os.path.join(ROOT, "backtest", "snapshot.json.gz")
+SNAPSHOT = os.environ.get("BT_SNAPSHOT") or os.path.join(ROOT, "backtest", "snapshot.json.gz")
 OUT = os.path.join(ROOT, "backtest", "results")
 
 # ── 구간 ─────────────────────────────────────────────────────
@@ -123,6 +123,8 @@ def load() -> tuple[dict, dict]:
         }
         data[t] = s
     univ["KOSPI200+KOSDAQ150"] = univ["KOSPI200"] | univ["KOSDAQ150"]
+    if "ALL" in univ:
+        univ["ALL"] = {t for t in univ["ALL"] if t in data}
     return data, {"univ": univ, "names": names}
 
 

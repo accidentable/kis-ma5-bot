@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
 
 from core.kis import client
@@ -69,19 +70,24 @@ def fetch_history(ticker: str, since: date, until: date) -> list[dict]:
 
 
 def load_all(tickers: list[str], cache_dir: str, since: date, until: date,
-             refresh: bool = False) -> dict[str, list[dict]]:
+             refresh: bool = False, extend: bool = False) -> dict[str, list[dict]]:
+    """extend=True 면 .since 표시가 없거나 요청보다 짧은 캐시를 다시 받는다 (fetch 용). 읽기만 할 땐 False."""
     os.makedirs(cache_dir, exist_ok=True)
     out: dict[str, list[dict]] = {}
     todo = []
     for t in tickers:
         p = os.path.join(cache_dir, f"{t}.json")
-        if not refresh and os.path.exists(p):
+        mark = p[:-5] + ".since"
+        # 예전에 더 짧은 기간으로 받은 캐시면 다시 받는다 (.since 에 그때 요청한 시작일을 적어 둔다)
+        short = os.path.exists(mark) and open(mark).read().strip() > since.strftime("%Y%m%d")
+        if not refresh and os.path.exists(p) and not short and (os.path.exists(mark) or not extend):
             with open(p, encoding="utf-8") as f:
                 out[t] = json.load(f)
         else:
             todo.append(t)
 
     logger.info("일봉: 캐시 %d종목 / 새로 받을 종목 %d", len(out), len(todo))
+    t0 = time.monotonic()
     for n, t in enumerate(todo, 1):
         try:
             bars = fetch_history(t, since, until)
@@ -90,7 +96,11 @@ def load_all(tickers: list[str], cache_dir: str, since: date, until: date,
             continue
         with open(os.path.join(cache_dir, f"{t}.json"), "w", encoding="utf-8") as f:
             json.dump(bars, f)
+        with open(os.path.join(cache_dir, f"{t}.since"), "w") as f:
+            f.write(since.strftime("%Y%m%d"))
         out[t] = bars
         if n % 10 == 0 or n == len(todo):
-            logger.info("일봉 수집 %d/%d (%s: %d봉)", n, len(todo), t, len(bars))
+            el = time.monotonic() - t0
+            logger.info("일봉 수집 %d/%d (%s: %d봉) — 남은 시간 약 %.0f분", n, len(todo), t, len(bars),
+                        el / n * (len(todo) - n) / 60)
     return out

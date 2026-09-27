@@ -7,6 +7,10 @@ backtest/run.py — 유니버스 비교 백테스트
   python -m backtest.run sens      가정을 바꿔가며 결론이 버티는지 (민감도)
   python -m backtest.run snapshot  캐시를 backtest/snapshot.json.gz 한 파일로 묶는다 (git 에 올리는 용도)
 
+  5년치 전 종목 (장 마감 뒤에, 약 3~5시간. 끊겨도 다시 돌리면 이어서 받는다):
+         python -m backtest.run fetch --years 5 --all
+         python -m backtest.run snapshot --out backtest/snapshot5y.json.gz
+
 캐시(data/)가 없고 스냅샷이 있으면 sim 이 스냅샷에서 캐시를 먼저 풀어낸다.
 그래서 한투 키가 없는 환경(클라우드 세션 등)에서도 sim 은 돈다.
 
@@ -38,20 +42,44 @@ OUT = os.path.join(ROOT, "backtest", "results")
 SNAPSHOT = os.path.join(ROOT, "backtest", "snapshot.json.gz")
 
 
-def make_snapshot() -> None:
+def make_snapshot(out: str = "") -> None:
     """캐시 전체(유니버스 + 종목별 일봉)를 gzip JSON 한 파일로."""
+    out = out or SNAPSHOT
     import gzip
     import json
     with open(UNIV_CACHE, encoding="utf-8") as f:
         univ = json.load(f)
-    bars = {}
+    index_members = {s["ticker"] for k, v in univ.items() if k != "ALL" for s in v}
+    bars, dropped = {}, 0
     for fn in sorted(os.listdir(CACHE)):
         if fn.endswith(".json"):
             with open(os.path.join(CACHE, fn), encoding="utf-8") as f:
-                bars[fn[:-5]] = json.load(f)
-    with gzip.open(SNAPSHOT, "wt", encoding="utf-8") as f:
+                b = json.load(f)
+            t = fn[:-5]
+            # 전 종목 스냅샷은 크기를 줄이려고, 기간 중 한 번도 20일 평균 거래대금 50억을 넘지 못한 종목은 뺀다.
+            # 시뮬레이터가 어차피 그런 날엔 사지 않으므로 결과에 영향이 없다.
+            if t not in index_members and not _ever_liquid(b):
+                dropped += 1
+                continue
+            bars[t] = b
+    if "ALL" in univ:
+        univ = dict(univ, ALL=[s for s in univ["ALL"] if s["ticker"] in bars])
+        logger.info("거래대금 기준 미달로 뺀 종목 %d개, ALL 에 남은 종목 %d개", dropped, len(univ["ALL"]))
+    with gzip.open(out, "wt", encoding="utf-8") as f:
         json.dump({"universes": univ, "bars": bars}, f, separators=(",", ":"))
-    logger.info("스냅샷 저장: %s (%d종목, %.1f MB)", SNAPSHOT, len(bars), os.path.getsize(SNAPSHOT) / 1e6)
+    logger.info("스냅샷 저장: %s (%d종목, %.1f MB)", out, len(bars), os.path.getsize(out) / 1e6)
+
+
+def _ever_liquid(b: list[dict], min_value: float = 5e9, n: int = 20) -> bool:
+    vals = [x.get("value") or 0.0 for x in b]
+    acc = 0.0
+    for i, v in enumerate(vals):
+        acc += v
+        if i >= n:
+            acc -= vals[i - n]
+        if i >= n - 1 and acc / n >= min_value:
+            return True
+    return False
 
 
 def restore_snapshot_if_needed() -> None:
@@ -80,19 +108,19 @@ def _pct(x: float, digits: int = 2) -> str:
     return "-" if x != x else f"{x * 100:+.{digits}f}%"
 
 
-def fetch(refresh: bool) -> None:
-    u = universes.build(UNIV_CACHE)
-    tickers = sorted({s["ticker"] for k in u for s in u[k]})
+def fetch(refresh: bool, years: int = YEARS, everything: bool = False) -> None:
+    u = universes.build(UNIV_CACHE, need_all=everything)
+    tickers = sorted({s["ticker"] for k in u for s in u[k] if everything or k != "ALL"})
     until = date.today()
-    since = until - timedelta(days=int(365.25 * YEARS) + 160)
+    since = until - timedelta(days=int(365.25 * years) + 160)
     logger.info("수집 대상 %d종목, %s ~ %s", len(tickers), since, until)
-    data.load_all(tickers, CACHE, since, until, refresh=refresh)
+    data.load_all(tickers, CACHE, since, until, refresh=refresh, extend=True)
 
 
 def sim() -> None:
     restore_snapshot_if_needed()
     u = universes.build(UNIV_CACHE)
-    names = {s["ticker"]: s["name"] for k in u for s in u[k]}
+    names = {s["ticker"]: s["name"] for k in u if k != "ALL" for s in u[k]}
     tickers = sorted(names)
     bars = data.load_all(tickers, CACHE, date(2000, 1, 1), date.today())  # 캐시만 읽는다
     missing = [t for t in tickers if t not in bars]
@@ -188,7 +216,7 @@ def sens(label: str = "KOSPI100") -> None:
     """가정을 하나씩 바꿔 결론이 버티는지 본다. 1순위 신호(겹침 허용) 기대값 기준."""
     restore_snapshot_if_needed()
     u = universes.build(UNIV_CACHE)
-    names = {s["ticker"]: s["name"] for k in u for s in u[k]}
+    names = {s["ticker"]: s["name"] for k in u if k != "ALL" for s in u[k]}
     bars = data.load_all(sorted(names), CACHE, date(2000, 1, 1), date.today())
     last = max(b[-1]["date"] for b in bars.values() if b)
     test_start = f"{int(last[:4]) - YEARS}{last[4:]}"
@@ -232,6 +260,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["fetch", "sim", "all", "snapshot", "sens"])
     ap.add_argument("--refresh", action="store_true", help="캐시 무시하고 다시 받기")
+    ap.add_argument("--years", type=int, default=YEARS, help="fetch: 몇 년치를 받을지 (기본 3)")
+    ap.add_argument("--all", action="store_true", help="fetch: 지수 구성종목 말고 코스피·코스닥 보통주 전체 (생존편향 완화)")
+    ap.add_argument("--out", default="", help="snapshot: 저장 경로 (기본 backtest/snapshot.json.gz)")
     args = ap.parse_args()
 
     for s in (sys.stdout, sys.stderr):
@@ -244,11 +275,11 @@ def main() -> int:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
     if args.cmd in ("fetch", "all"):
-        fetch(args.refresh)
+        fetch(args.refresh, args.years, args.all)
     if args.cmd in ("sim", "all"):
         sim()
     if args.cmd == "snapshot":
-        make_snapshot()
+        make_snapshot(args.out)
     if args.cmd == "sens":
         sens()
     return 0
