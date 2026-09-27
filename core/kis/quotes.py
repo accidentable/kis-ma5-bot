@@ -130,6 +130,51 @@ def get_daily_candles(ticker: str, days: int = 40) -> list[dict]:
     return candles[-days:] if days else candles
 
 
+def get_daily_history(ticker: str, bars: int = 260) -> list[dict]:
+    """
+    일봉을 bars 개 이상 (날짜 오름차순). 일봉 API 는 한 번에 100건까지라 날짜 구간을 뒤로 밀며 여러 번 받는다.
+    상장한 지 얼마 안 된 종목은 있는 만큼만 돌려준다.
+    """
+    by_date: dict[str, dict] = {}
+    end = date.today()
+    for _ in range(8):
+        start = end - timedelta(days=140)       # 140 달력일 ≈ 95 거래일 (100건 제한 안쪽)
+        data = client.get(
+            _PATH_DAILY, TR_DAILY_CHART,
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+        )
+        rows = data.get("output2") or []
+        got = 0
+        for r in rows:
+            d = str(r.get("stck_bsop_date", "")).strip()
+            close = _f(r.get("stck_clpr"))
+            if not d or close <= 0:
+                continue
+            got += 1
+            by_date[d] = {
+                "date": d,
+                "open": _f(r.get("stck_oprc")) or close,
+                "high": _f(r.get("stck_hgpr")) or close,
+                "low": _f(r.get("stck_lwpr")) or close,
+                "close": close,
+                "volume": _i(r.get("acml_vol")),
+                "value": _f(r.get("acml_tr_pbmn")),
+            }
+        if got == 0 or len(by_date) >= bars:
+            break
+        oldest = datetime.strptime(min(by_date), "%Y%m%d").date()
+        end = min(start, oldest) - timedelta(days=1)
+    out = [by_date[k] for k in sorted(by_date)]
+    return out[-bars:]
+
+
 def _holiday_rows(base: date) -> list[dict]:
     return client.paginate(
         _PATH_HOLIDAY, TR_HOLIDAY,

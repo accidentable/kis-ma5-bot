@@ -5,7 +5,8 @@ cli.py — 로컬 실행 진입점
   python cli.py chatid     텔레그램 봇 확인 + 내 chat ID 조회
   python cli.py account    계좌 상품코드 진단 (APBK1271 오류 시)
   python cli.py universe   KOSPI100 유니버스 확인
-  python cli.py scan       시그널 스캔 (주문 없음)
+  python cli.py scan       시그널 스캔 / near_high 는 오늘 순위 (주문 없음)
+  python cli.py prep       개장 전 준비 1회 (near_high: 순위 계산)
   python cli.py entry      09:05 진입 작업 1회 실행
   python cli.py monitor    장중 감시 1회 실행
   python cli.py close      마감 정리 1회 실행
@@ -218,7 +219,14 @@ def cmd_account(args) -> int:
 
 
 def cmd_universe(args) -> int:
+    import config
     from core import universe
+    if config.STRATEGY == "near_high":
+        stocks = universe.get_large_universe(config.NH_UNIVERSE_TOP, force=args.force)
+        print(f"코스피+코스닥 시총 상위 {len(stocks)}종목")
+        for i, s in enumerate(stocks, 1):
+            print(f"{i:3d}. {s['ticker']} {s['name']:<16} {s.get('market', ''):<6} 시총 {s['marcap']:>12,.0f}억")
+        return 0
     stocks = universe.get_universe(force=args.force)
     print(f"KOSPI100 매매대상 {len(stocks)}종목")
     for i, s in enumerate(stocks, 1):
@@ -228,25 +236,57 @@ def cmd_universe(args) -> int:
 
 def cmd_scan(args) -> int:
     """수동 스캔. 항상 일봉을 새로 받는다 — 당일 캐시가 옛 코드로 만들어졌을 수 있다."""
+    import config
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        ranked, stats = rotation.build_ranking()
+        print(rotation.format_ranking(ranked, stats, limit=20))
+        return 0
     from jobs import scan as scan_job
     ranked, stats = scan_job.scan(use_cache=False)
     print(scan_job.format_result(ranked, stats, limit=20))
     return 0
 
 
+def cmd_prep(args) -> int:
+    import config
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.prep(force=args.force))
+    else:
+        from jobs import prep
+        print(prep.run(force=args.force))
+    return 0
+
+
 def cmd_entry(args) -> int:
+    import config
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.entry(force=args.force))
+        return 0
     from jobs import entry
     print(entry.run(force=args.force))
     return 0
 
 
 def cmd_monitor(args) -> int:
+    import config
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.monitor(force=args.force))
+        return 0
     from jobs import monitor
     print(monitor.run(force=args.force))
     return 0
 
 
 def cmd_close(args) -> int:
+    import config
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.close(force=args.force))
+        return 0
     from jobs import close
     print(close.run(force=args.force))
     return 0
@@ -270,7 +310,6 @@ def cmd_serve(args) -> int:
 
     import config
     from core import notify, poller
-    from jobs import close, entry, monitor, prep
 
     log = logging.getLogger("serve")
     sched = BlockingScheduler(timezone="Asia/Seoul")
@@ -287,6 +326,44 @@ def cmd_serve(args) -> int:
 
     def _hm(hhmm: str) -> tuple[int, int]:
         return int(hhmm[:2]), int(hhmm[2:])
+
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        for job_id, name, fn, hhmm in (("prep", "순위 계산", rotation.prep, config.NH_PREP_TIME),
+                                        ("entry", "교체 매매", rotation.entry, config.NH_ENTRY_TIME)):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
+        sched.add_job(_wrap("감시", rotation.monitor),
+                      CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/10"),
+                      id="monitor", replace_existing=True)
+        sched.add_job(_wrap("마감", rotation.close), CronTrigger(day_of_week="mon-fri", hour=15, minute=15),
+                      id="close", replace_existing=True)
+    else:
+        _schedule_ma5(sched, _wrap, _hm)
+
+    # 텔레그램 명령 수신 (롱폴링) — 공개 엔드포인트가 필요 없다
+    notify.set_commands()
+    _, stop_poller = poller.start_thread()
+
+    notify.send("🤖 봇 시작\n" + config.summary())
+    log.info("스케줄러 시작 — Ctrl+C 로 종료")
+    try:
+        sched.start()
+    except (KeyboardInterrupt, SystemExit):
+        log.info("종료 신호 수신")
+    finally:
+        stop_poller.set()
+        notify.send("🛑 봇 종료")
+    return 0
+
+
+def _schedule_ma5(sched, _wrap, _hm) -> None:
+    """예전 MA5 돌파 전략 일정 (STRATEGY=ma5)."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    import config
+    from jobs import close, entry, monitor, prep
 
     ph, pm = _hm(config.PREP_TIME)
     sched.add_job(_wrap("준비", prep.run), CronTrigger(day_of_week="mon-fri", hour=ph, minute=pm),
@@ -305,24 +382,9 @@ def cmd_serve(args) -> int:
     sched.add_job(_wrap("마감", close.run), CronTrigger(day_of_week="mon-fri", hour=15, minute=15),
                   id="close", replace_existing=True)
 
-    # 텔레그램 명령 수신 (롱폴링) — 공개 엔드포인트가 필요 없다
-    notify.set_commands()
-    _, stop_poller = poller.start_thread()
-
-    notify.send("🤖 봇 시작\n" + config.summary())
-    log.info("스케줄러 시작 — Ctrl+C 로 종료")
-    try:
-        sched.start()
-    except (KeyboardInterrupt, SystemExit):
-        log.info("종료 신호 수신")
-    finally:
-        stop_poller.set()
-        notify.send("🛑 봇 종료")
-    return 0
-
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="한투 OpenAPI MA5 돌파 역발상 봇")
+    parser = argparse.ArgumentParser(description="한투 OpenAPI 자동매매 봇 (STRATEGY=near_high | ma5)")
     parser.add_argument("--force", action="store_true", help="휴장일 체크를 건너뛴다")
     parser.add_argument("--reset-webhook", action="store_true",
                         help="chatid 실행 시 기존 텔레그램 웹훅을 해제한다")
@@ -334,7 +396,8 @@ def main() -> int:
         ("chatid", cmd_chatid, "텔레그램 봇 확인 + 내 chat ID 조회"),
         ("account", cmd_account, "계좌 상품코드 진단"),
         ("universe", cmd_universe, "유니버스 확인"),
-        ("scan", cmd_scan, "시그널 스캔 (주문 없음)"),
+        ("scan", cmd_scan, "시그널 스캔 / 순위 (주문 없음)"),
+        ("prep", cmd_prep, "개장 전 준비 1회"),
         ("entry", cmd_entry, "진입 작업 1회"),
         ("monitor", cmd_monitor, "장중 감시 1회"),
         ("close", cmd_close, "마감 정리 1회"),

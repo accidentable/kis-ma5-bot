@@ -16,10 +16,10 @@ from core.kis import quotes, trading
 
 logger = logging.getLogger(__name__)
 
-HELP = """MA5 돌파 역발상 봇
+HELP = """자동매매 봇 (/config 로 전략 확인)
 
 /status   보유 포지션 + 손익
-/scan     지금 기준 시그널 스캔 (주문 안 함)
+/scan     오늘 순위 / 시그널 스캔 (주문 안 함)
 /history  최근 매매 이력
 /config   현재 설정
 /pause    자동매매 일시정지
@@ -28,6 +28,9 @@ HELP = """MA5 돌파 역발상 봇
 
 
 def _cmd_status() -> str:
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        return rotation.status_text()
     lines = []
     try:
         bal = trading.get_balance()
@@ -68,6 +71,12 @@ def _cmd_status() -> str:
 
 
 def _cmd_scan() -> str:
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        ranked, stats = rotation.load_ranking(build_if_missing=False)
+        if not ranked and not stats:
+            return "오늘 순위가 아직 없다. 계산에 3~5분 걸려서 채팅에선 안 돌린다 — 08:20 준비 작업이 만든다."
+        return rotation.format_ranking(ranked, stats)
     from jobs import scan as scan_job
     ranked, stats = scan_job.scan()
     return scan_job.format_result(ranked, stats)
