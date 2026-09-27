@@ -4,7 +4,7 @@ jobs/rotation.py — 52주 신고가 근접 로테이션의 하루 (STRATEGY=nea
   prep()     NH_PREP_TIME(08:20)  거래일 카운트를 올리고, 교체일이거나 빈 슬롯이 있으면 순위를 계산해 캐시한다
   entry()    NH_ENTRY_TIME(09:05) 교체일이면 순위 밖 보유 종목을 팔고, 빈 슬롯을 순위대로 채운다
   monitor()  10분마다            체결 동기화, (설정 시) 손절, 교체가 밀렸으면 실행, 빈 슬롯 재시도 (NH_BUY_CUTOFF 까지)
-  close()    15:15               미체결 정리 + 마감 리포트. 보유 기간 만료 같은 청산은 없다 (교체일에만 판다)
+  close()    15:15               미체결 정리, 오늘 NH_SURGE_EXIT_PCT% 이상 급등한 보유 종목 매도, 마감 리포트
 
 상태는 state.json 의 "rotation" 에 둔다.
   cycle_start   마지막 교체일 (없으면 아직 한 번도 안 샀다 → 다음 진입이 곧 교체)
@@ -404,11 +404,32 @@ def _report(closed: list[dict], cancelled: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _surge_exits() -> list[dict]:
+    """보유 종목 중 오늘 NH_SURGE_EXIT_PCT % 이상 오른 것을 판다 (급등 뒤엔 부진하다는 16년 관찰)."""
+    if config.NH_SURGE_EXIT_PCT <= 0:
+        return []
+    out = []
+    for pos in state.get_positions():
+        if pos.get("entry_date") == _today():
+            continue            # 오늘 산 건 오늘 안 판다
+        try:
+            q = quotes.get_price(pos["ticker"])
+        except Exception as e:
+            logger.error("%s 현재가 조회 실패: %s", pos["ticker"], e)
+            continue
+        if q["change_pct"] >= config.NH_SURGE_EXIT_PCT:
+            rec = trader.exit_position(pos, f"급등 매도 (오늘 {q['change_pct']:+.1f}%)", price=q["price"])
+            if rec:
+                out.append(rec)
+    return out
+
+
 def close(force: bool = False, send_report: bool = True) -> dict:
     if not force and not quotes.is_open_day(date.today()):
         return {"skipped": "휴장일"}
     cancelled = trader.cancel_all_pending()
     trader.sync_fills()
+    _surge_exits()
     today_closed = [h for h in state.get_history(limit=20) if h.get("exit_date") == _today()]
     if send_report:
         notify.send(_report(today_closed, cancelled))

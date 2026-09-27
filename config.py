@@ -105,6 +105,9 @@ NH_MIN_VALUE: float = _env_float("NH_MIN_VALUE", 1_000_000_000)  # 20일 평균 
 # 최근 20거래일 안에 하루 이 % 이상 오른 날이 있으면 뺀다 (급등 테마주 회피). 0 이면 끔.
 # 16년 백테스트: 한 달 평균은 비슷하고, 한 달 −10% 이하 확률이 모든 구간에서 줄었다 (7→5, 8→5, 13→6, 16→5%).
 NH_MAX_DAILY_GAIN_PCT: float = _env_float("NH_MAX_DAILY_GAIN_PCT", 10.0)
+# 보유 종목이 하루 이 % 이상 오르면 그날 마감 작업(15:15)에서 판다 (급등 뒤 부진). 0 이면 끔.
+# 빈 자리는 다음 날 순위로 채운다 (NH_REFILL). 16년 백테스트: 한 달 평균 −0.1/+0.9/+1.5/+0.4% → −0.1/+1.1/+1.7/+1.0%
+NH_SURGE_EXIT_PCT: float = _env_float("NH_SURGE_EXIT_PCT", 10.0)
 NH_CANDIDATES: int = _env_int("NH_CANDIDATES", 15)             # 순위표에 남길 후보 수 (비싸서 못 사면 다음 순위)
 # 교체일이 아닌 날에도 빈 슬롯이 있으면 그날 순위로 채운다 (매수 실패·수동 매도 뒤 복구용)
 NH_REFILL: bool = _env_bool("NH_REFILL", True)
@@ -336,7 +339,8 @@ def summary() -> str:
             f"거래대금 {NH_MIN_VALUE / 1e8:,.0f}억↑, {NH_MOM_DAYS}일 수익률 > 0"
             + (f", 20일 내 +{NH_MAX_DAILY_GAIN_PCT:g}%↑ 급등일 없음" if NH_MAX_DAILY_GAIN_PCT > 0 else "") + ")\n"
             f"순위: 전일 종가 / {NH_HIGH_LOOKBACK}일 최고가 (높을수록 먼저)\n"
-            f"보유: {NH_SLOTS}종목 균등 | {NH_HOLD_DAYS}거래일마다 교체 | 손절 {stop}\n"
+            f"보유: {NH_SLOTS}종목 균등 | {NH_HOLD_DAYS}거래일마다 교체 | 손절 {stop}"
+            + (f" | 하루 +{NH_SURGE_EXIT_PCT:g}%↑ 급등 시 마감 때 매도" if NH_SURGE_EXIT_PCT > 0 else "") + "\n"
             f"일정: {NH_PREP_TIME[:2]}:{NH_PREP_TIME[2:]} 순위 계산 → {NH_ENTRY_TIME[:2]}:{NH_ENTRY_TIME[2:]} 교체 매매 "
             f"(빈 슬롯은 {NH_BUY_CUTOFF[:2]}:{NH_BUY_CUTOFF[2:]}까지 10분마다 재시도)"
         )

@@ -33,6 +33,7 @@ config.NH_MIN_VALUE = 1_000_000_000
 config.NH_REFILL = True
 config.NH_STOP_LOSS_PCT = 0.0
 config.NH_MAX_DAILY_GAIN_PCT = 10.0
+config.NH_SURGE_EXIT_PCT = 10.0
 config.ENTRY_LIMIT_TICKS = 2
 
 from core import nearhigh, state                 # noqa: E402
@@ -264,9 +265,28 @@ def main() -> int:
     rotation.monitor(force=True)
     check("다음 날 빈 슬롯 복구 (NH_REFILL)", len(held()) == 2, str(held()))
 
-    print("\n── 마감 / 설정 요약 / 실주문 모드 매도 대기 ───────")
+    print("\n── 마감 / 급등 매도 / 설정 요약 / 실주문 모드 매도 대기 ───────")
+    before = held()
     c = rotation.close(force=True, send_report=False)
-    check("마감 실행", "cancelled" in c)
+    check("마감 실행 (급등 없으면 매도 없음)", "cancelled" in c and held() == before, str(held()))
+    tgt = before[0]
+    d = state.load()
+    for p in d["positions"]:
+        p["entry_date"] = "2000-01-01"
+    state.save(d)
+    orig = quotes.get_price
+    quotes.get_price = lambda t, market="J": {**orig(t, market), "change_pct": 12.0 if t == tgt else 1.0}
+    c = rotation.close(force=True, send_report=False)
+    check("하루 +10%↑ 급등 보유 종목은 마감 때 매도", tgt not in held() and len(held()) == len(before) - 1,
+          f"{before} → {held()}")
+    check("급등 매도 이력", any("급등 매도" in h.get("exit_reason", "") for h in state.get_history()))
+    config.NH_SURGE_EXIT_PCT = 0
+    rest = held()
+    quotes.get_price = lambda t, market="J": {**orig(t, market), "change_pct": 20.0}
+    rotation.close(force=True, send_report=False)
+    check("NH_SURGE_EXIT_PCT=0 이면 급등 매도 안 함", held() == rest)
+    config.NH_SURGE_EXIT_PCT = 10.0
+    quotes.get_price = orig
     check("요약에 전략명", "52주 신고가" in config.summary())
     check("설정 검증 통과", not [p for p in config.validate() if "STRATEGY" in p or "NH_" in p])
     config.DRY_RUN = False
