@@ -41,7 +41,7 @@ def momentum_rank(ctx: dict, members: set, d: str, top: int) -> set:
     key = (d, top)
     if key not in cache:
         out = []
-        for t in members:
+        for t in sorted(members):
             s = ctx["data"].get(t)
             i = s.idx.get(d) if s else None
             if i is None or i < 125:
@@ -141,7 +141,7 @@ class Pullback(Strategy):
     def candidates(self, d):
         top = momentum_rank(self.ctx, self.members, d, 20)
         out = []
-        for t in top:
+        for t in sorted(top):
             s = self.data[t]
             i = s.idx.get(d)
             if i is None or not self._liquid(s, i):
@@ -246,12 +246,14 @@ def run(strat: Strategy, cal: list, start: str, end: str, k: int, cost: dict = C
             free = k - len(pos) + len(pend_exit)
             if free > 0 and cands:
                 pending = [(t, sc) for t, sc in cands if t not in pos][:free]
+    liq = cash   # 기간 끝에 전부 종가로 판다고 볼 때의 최종 자산 (매도 비용 반영)
     for t, p in pos.items():
         s = data[t]
         i = max(j for j, x in enumerate(s.d) if x <= days[-1])
+        liq += p.qty * s.c[i] * (1 - cost["slip_auction"]) * (1 - cost["fee"] - cost["tax"])
         trades.append(Trade(t, p.entry_d, s.d[i], p.qty * s.c[i] * (1 - cost["fee"] - cost["tax"]) / p.cost - 1,
                             p.days, "기간 끝"))
-    return {"trades": trades, "curve": curve}
+    return {"trades": trades, "curve": curve, "liq": liq}
 
 
 def stats2(r: dict) -> dict:

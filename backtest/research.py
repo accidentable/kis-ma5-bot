@@ -165,7 +165,8 @@ class Strategy:
     name = "base"
 
     def __init__(self, ctx: dict, members: set, **p):
-        self.ctx, self.members, self.p = ctx, members, p
+        # 정렬된 목록으로 들고 있어야 동점 후보의 순서가 실행마다 같다 (set 순서는 PYTHONHASHSEED 에 따라 바뀐다)
+        self.ctx, self.members, self.p = ctx, sorted(members), p
         self.data = ctx["data"]
         self.regime_on = True
 
@@ -314,6 +315,8 @@ class Momentum(Strategy):
             if i is None or i < 125 or not self._liquid(s, i):
                 continue
             m = s.ind[key][i]
+            if s.c[i] > getattr(self, "cap", math.inf):
+                continue   # 주가 상한은 순위를 매기기 전에 건다 (상위 K개를 고른 뒤 거르면 빈손이 된다)
             if m == m and m > 0 and s.c[i] > s.ind["ma60"][i]:
                 out.append((t, m))
         return sorted(out, key=lambda x: -x[1])
@@ -543,9 +546,15 @@ class MaxPrice(Strategy):
     def __init__(self, inner: Strategy, cap: float):
         self.inner, self.cap = inner, cap
         self.data, self.p, self.name = inner.data, dict(inner.p, cap=cap), inner.name
+        inner.cap = cap
+        self.intraday = getattr(inner, "intraday", False)
+        self.entry_at_close = getattr(inner, "entry_at_close", False)
 
     def begin_day(self, d):
         self.inner.begin_day(d)
+
+    def intraday_entries(self, d):
+        return [x for x in self.inner.intraday_entries(d) if x[1] <= self.cap]
 
     def candidates(self, d):
         return [(t, sc) for t, sc in self.inner.candidates(d) if self.data[t].c[self.data[t].idx[d]] <= self.cap]
