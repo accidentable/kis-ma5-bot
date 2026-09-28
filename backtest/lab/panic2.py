@@ -580,8 +580,7 @@ def perturbed_A_lists(X, sa, rng, t0, t1):
         sc = -icum
     elif sa == "SA7":
         secx = F.secx[sl] + em[:, None]
-        m = (CF & U & (F.sector >= 0)[None, :] & (r1 <= -0.05) & (secx <= -0.03) & (F.sbreadth[sl] >= 0.5)
-             & ((r1 - secx) > -0.05))
+        m = CF & U & (r1 <= -0.05) & (secx <= -0.03) & (F.sbreadth[sl] >= 0.5) & ((r1 - secx) > -0.05)
         sc = -r1
     else:
         raise ValueError(sa)
@@ -740,32 +739,37 @@ def placebo_names(X, d, entry):
 
 def rc_A(X, keys, t0, t1, n_draw=N_RC):
     """트랙 A 현실성 검사: 같은 사건 날짜에 위약 종목(그날 하락했지만 평범한 대형주)으로 바꿔 평소 보유 대비 Delta 평균.
-    추첨마다 (날짜, 진입) 하나에 위약 종목 하나를 뽑아 모든 설정이 함께 쓰고, 설정 중 최고값을 모은다. 반환: 90% 분위."""
+    추첨마다 (날짜, 진입) 하나에 서로 다른 위약 종목을 사건 순위(1 · 2위) 만큼 뽑아 모든 설정이 함께 쓰고, 설정 중 최고값을 모은다.
+    반환: 90% 분위."""
     F = X.F
     rng = np.random.default_rng(SEED + 1)
     pairs: dict = {}
     per = []
     for sa, entry in keys:
-        t, j = a_events(X, sa, t0, t1)
+        t, j, rk = C.events_from_top(getattr(F, f"top_{sa}"), 2, t0, t1)
         net, _ = C.fwd(F, t, j, entry, 5)
         b1 = C.base_gross(F, t, entry, 5, (1,))
         ok = np.isfinite(net) & np.isfinite(b1)
-        t, b1 = t[ok], b1[ok]
+        t, b1, rk = t[ok], b1[ok], rk[ok]
         pk = []
-        for d in t:
+        for d, r_ in zip(t, rk):
             key = (int(d), entry)
             if key not in pairs:
                 mem = placebo_names(X, d, entry)
                 g = C.fwd(F, np.full(len(mem), d), mem, entry, 5)[1] if len(mem) else np.zeros(0)
                 pairs[key] = g[np.isfinite(g)]
-            pk.append(key)
+            pk.append((key, int(r_)))
         per.append((b1, pk))
     names = list(pairs)
     best = np.full(n_draw, -np.inf)
     for i in range(n_draw):
-        ch = {p: (pairs[p][rng.integers(len(pairs[p]))] if len(pairs[p]) else np.nan) for p in names}
+        ch = {}
+        for p_ in names:
+            g = pairs[p_]
+            idx = rng.permutation(len(g))[:2] if len(g) else []
+            ch[p_] = [g[x] for x in idx] + [np.nan] * (2 - len(idx))
         for b1, pk in per:
-            g = np.array([ch[p] for p in pk])
+            g = np.array([ch[p_][r_] for p_, r_ in pk])
             v = g - C.COST - b1 - C.COST
             if np.isfinite(v).any():
                 best[i] = max(best[i], float(np.nanmean(v)))
@@ -855,11 +859,6 @@ def phase_is(dry=False, new_registration=False):
     if not dry:
         if os.path.exists(FREEZE) and not new_registration:
             sys.exit("이미 동결됐다. 다시 동결하려면 --new-registration (옛 동결은 보관되고 TEST 는 '이미 봄' 으로 표시된다)")
-        if os.path.exists(FREEZE):
-            tag = time.strftime("%Y%m%d%H%M%S")
-            for pth in (FREEZE, FREEZE_LOCK, ISJ, VALJ, TESTJ):
-                if os.path.exists(pth):
-                    os.rename(pth, pth + f".spent-{tag}")
         dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--"] + FILES, cwd=E.ROOT).returncode != 0
         untracked = subprocess.run(["git", "ls-files", "--error-unmatch"] + FILES, cwd=E.ROOT,
                                    capture_output=True).returncode != 0
@@ -959,7 +958,7 @@ def phase_is(dry=False, new_registration=False):
             res[c.id] = r0res
         else:
             res[c.id] = run_cfg(X, c, st, r0)
-        out["configs"][c.id] = {"track": c.track, "desc": c.desc, "IS": cstats(res[c.id], r0, st, F)}
+        out["configs"][c.id] = {"track": c.track, "desc": c.desc, "ref": c.ref, "IS": cstats(res[c.id], r0, st, F)}
     print(f"P2 대회 {time.time() - t_start:.0f}s", flush=True)
     R0s = out["configs"]["R0"]["IS"]
 
@@ -1049,6 +1048,15 @@ def phase_is(dry=False, new_registration=False):
     out["elapsed_s"] = time.time() - t_start
     if dry:
         return out, X, cfgs, res
+    # 옛 등록 보관은 모든 점검을 통과한 뒤, 새 동결을 쓰기 직전에 한다
+    import glob
+    reg = 1 + len(glob.glob(FREEZE + ".spent-*"))
+    if os.path.exists(FREEZE):
+        tag = time.strftime("%Y%m%d%H%M%S")
+        for pth in (FREEZE, FREEZE_LOCK, ISJ, VALJ, TESTJ):
+            if os.path.exists(pth):
+                os.rename(pth, pth + f".spent-{tag}")
+        reg = 1 + len(glob.glob(FREEZE + ".spent-*"))
     jdump(out, ISJ)
     freeze = {"git_head": git_head(), "sha256": sha_files(), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
               "finalists": fin, "AB": ab, "eligibility": elig, "rc": {k: out[k] for k in ("rc_A", "rc_B")},
@@ -1059,9 +1067,10 @@ def phase_is(dry=False, new_registration=False):
               "gates_B": {k: {kk: vv for kk, vv in v.items() if kk in ("pass", "reasons", "N_ep_IS", "N_ep_VAL", "ep_mean",
                                                                        "ep_pos", "plateau", "jaccard_T0")}
                           for k, v in out["gates_B"].items()}}
-    freeze["registration"] = {"new_registration": bool(new_registration),
+    freeze["registration"] = {"n": reg, "new_registration": bool(new_registration),
                               "test_seen_before": True,
-                              "note": "트랙 B 의 TEST(2024.10~) 는 lab_panic 에서 이미 봤다 — 거부권으로만 쓴다"}
+                              "note": "트랙 B 의 TEST(2024.10~) 는 lab_panic 에서 이미 봤다 — 거부권으로만 쓴다"
+                                      + ("; 이전 등록에서 VAL · TEST 를 봤다 — 이번 결과는 참고용" if reg > 1 else "")}
     jdump(freeze, FREEZE)
     with open(FREEZE_LOCK, "w", encoding="utf-8") as fh:
         fh.write(_sha(FREEZE) + "  lab_panic2_freeze.json\n")
@@ -1344,10 +1353,13 @@ def nested_loeo(X, cfgs, t_end):
         d = d[(d >= a) & (d < t_end)]
         union[d] = True
         dd, dl = b_day_deltas(X, c, d)
-        ex = np.array([b_exit_day(X, c, t) for t in dd], int)
         alt = {}
-        if c.exit in ("FIX", "IDX", "STAGED_FIX"):
-            for H in ((3, 7) if c.hold == 5 else (7, 15)):
+        Hs = ((3, 7) if c.hold == 5 else (7, 15)) if c.exit in ("FIX", "IDX", "STAGED_FIX") else ()
+        # 훈련 날짜는 고원 검사에 쓰는 가장 긴 지평의 청산일까지 검증 사건 전에 끝나야 한다
+        cm = replace(c, hold=max((c.hold,) + tuple(Hs))) if Hs else c
+        ex = np.array([b_exit_day(X, cm, t) for t in dd], int)
+        if Hs:
+            for H in Hs:
                 d2, l2 = b_day_deltas(X, c, d, H=H)
                 alt[H] = dict(zip(d2.tolist(), l2.tolist()))
         per[c.id] = {"d": dd, "v": dl, "exit": ex, "alt": alt}
@@ -1529,7 +1541,8 @@ def write_report():
         return P(v, dig) if isinstance(v, (int, float)) else "-"
     L = ["# 종목 패닉 · 시장 패닉 매수 — 2차 연구 (사전 등록 · 동결 · 검증)", "",
          (__doc__ or "").split("\n\n", 1)[1].strip(), "",
-         f"동결: git {fz['git_head'][:10]} · {fz['created']} · 파일 해시는 lab_panic2_freeze.json", "",
+         f"동결: git {fz['git_head'][:10]} · {fz['created']} · 등록 {fz.get('registration', {}).get('n', 1)}번째 · "
+         f"파일 해시는 lab_panic2_freeze.json · {fz.get('registration', {}).get('note', '')}", "",
          "## 결론", ""]
     ad = tj["adopt"]
     for trk, nm in (("B", "시장 패닉 (트랙 B)"), ("A", "종목 패닉 (트랙 A)"), ("AB", "조합")):
@@ -1550,7 +1563,8 @@ def write_report():
         v = vj["configs"].get(cid, {}).get("VAL", {})
         t = tj["configs"].get(cid, {}).get("TEST", {})
         s = c["IS"]
-        why = "; ".join(isj["eligibility"].get(cid, [])) if cid in isj["eligibility"] else ("기준선" if c["track"] == "R" else "")
+        why = "; ".join(isj["eligibility"].get(cid, [])) if cid in isj["eligibility"] else (
+            "기준선" if c.get("ref") or c["track"] == "R" else "")
         L.append(f"| {cid} | {c['track']} | {c['desc']} | {g(s, 'mean')} | {g(v, 'mean')} | {g(t, 'mean')} | {g(s, 'delta', 2)} | "
                  f"{g(v, 'delta', 2)} | {g(t, 'delta', 2)} | {g(v, 'delta_ctrl', 2)} | {s['p10d'] * 100:.0f}% | "
                  f"{s['share_entry'] * 100:.0f}% | {why or ('결선' if cid in fz['finalists']['A'] + fz['finalists']['B'] else '적격 (결선 밖)')} |")
@@ -1558,18 +1572,30 @@ def write_report():
         v, t = vj["configs"]["AB"]["VAL"], tj["configs"]["AB"]["TEST"]
         L.append(f"| AB | AB | 조합 {fz['AB']} | - | {g(v, 'mean')} | {g(t, 'mean')} | - | {g(v, 'delta', 2)} | {g(t, 'delta', 2)} | "
                  f"{g(v, 'delta_ctrl', 2)} | - | - | |")
-    L += ["", "## VAL 판정 (결선만)", "", "| 설정 | (i) Δ≥0.3pp (R0·대조군) | (ii) P10d | (iii) 하나 빼기 | (iv) 합친 사건 | (v) 위약 90% | CVaR | 합계 |",
-          "|---|---|---|---|---|---|---|---|"]
+    L += ["", "## VAL 판정 (결선만)", "",
+          "| 설정 | (i) Δ≥0.3pp (R0·대조군) | (ii) P10d | (iii) 하나 빼기 | (iv) 합친 사건 | (v) 위약 90% | CVaR | (vi) 조합 | 합계 | 진단: LOO G5 / G21 · 정지 대체평가 |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     for cid, cr in vj["criteria"].items():
+        vi = ("O" if cr["vi"] else "X") if "vi" in cr else "-"
+        vv = vj["configs"].get(cid, {}).get("VAL", {})
         L.append(f"| {cid} | {'O' if cr['i'] else 'X'} ({P(cr['delta'], 2)} / {P(cr['delta_ctrl'], 2)}) | {'O' if cr['ii'] else 'X'} | "
                  f"{'O' if cr['iii'] else 'X'} | {'O' if cr['iv'] else 'X'} | {'O' if cr['v'] else 'X'} ({P(cr['pooled_delta'], 2)} vs {P(cr['placebo_q90'], 2)}) | "
-                 f"{'O' if cr['cvar'] else 'X'} | {'통과' if cr['pass'] else '탈락'} |")
+                 f"{'O' if cr['cvar'] else 'X'} | {vi} | {'통과' if cr['pass'] else '탈락'} | "
+                 f"{g(cr, 'loo_min_G5', 2)} / {g(cr, 'loo_min_G21', 2)} · {g(vv, 'halt_alt_diff', 2)} |")
     if not vj["criteria"]:
-        L.append("| (결선 없음) | | | | | | | |")
+        L.append("| (결선 없음) | | | | | | | | | |")
+    rob = isj.get("robustness", {})
+    if rob:
+        L += ["", "## 종가 결정 강건성 (IS, 다른 조건을 통과한 종가 결정 설정만)", "",
+              "| 설정 | 종가 잡음 50회 평균 Δ / 원래 Δ | 다음 날 시가로 옮긴 Δ | 통과 |", "|---|---|---|---|"]
+        for cid, r in rob.items():
+            L.append(f"| {cid} | {P(r['noise']['mean'], 2)} ({(r['noise']['ratio'] or 0) * 100:.0f}%) | {P(r['next_open_delta'], 2)} | "
+                     f"{'O' if r['noise']['pass'] and r['next_open_pass'] else 'X'} |")
     L += ["", "## TEST 거부권 · 중첩 LOEO", "", "TEST 는 이전 연구(lab_panic)에서 이미 본 구간이라 오염 — 거부만 할 수 있다.", ""]
     for cid, v in tj["veto"].items():
+        tt = tj["configs"].get(cid, {}).get("TEST", {})
         L.append(f"- {cid}: TEST {P(v['mean'])} (R0 {P(tj['configs']['R0']['TEST']['mean'])}), P10d {v['p10d'] * 100:.0f}% → "
-                 f"{'통과' if v['pass'] else '거부'}")
+                 f"{'통과' if v['pass'] else '거부'} · Δ {g(tt, 'delta', 2)}, 2026-03 사건 뺀 Δ {g(tt, 'delta_ex_2026_03', 2)}")
     nl = tj.get("nested_loeo", {})
     if nl.get("n_folds"):
         L.append(f"- 중첩 LOEO (관문 통과 B 설정들, {nl['n_folds']}개 사건): 사건 밖 평균 {P(nl['ooe_mean'], 2)}, 중앙값 "

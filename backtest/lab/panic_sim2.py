@@ -91,6 +91,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
     mp_active_mode = False
     post_mp = False          # 패닉 청산 뒤 재정렬이 예약됐고 아직 안 됨
     sp_freed = 0             # 종목 패닉 청산으로 비었고 아직 다른 것으로 안 채운 슬롯 수
+    mp_freed = 0             # 분할 모드: 다른 패닉 포지션이 남은 채 한 슬롯이 청산돼 빈 슬롯 수
     stage = {}
     ep_count: dict = {}
 
@@ -114,7 +115,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         return p["cost"] * net / p["ea"], net
 
     def sell(j, t, px, extra=0.0, at_open=False):
-        nonlocal cash, sp_freed
+        nonlocal cash, sp_freed, mp_freed
         v, net = proceeds(j, t, px, extra)
         p = pos.pop(j)
         cash += v
@@ -123,6 +124,8 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
             info["trades"].append((p["kind"], p["t0"], t, net / p["ea"] - 1))
             if p["kind"] == "sp":
                 sp_freed += 1
+            elif any(q["kind"] == "mp" for q in pos.values()):
+                mp_freed += 1
 
     def close_sellable(j, t):
         if not traded(t, j):
@@ -255,6 +258,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
             next_rebal = t                   # 패닉 포지션이 시가에 정리됐으면 같은 시가에 재정렬
             post_mp = True
             mp_active_mode = False
+            mp_freed = 0
         if t in force_rebal:
             next_rebal = min(next_rebal, t)
         if t in force_swap:
@@ -288,7 +292,9 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         if cfg.sp_top is not None and cfg.sp_entry in ("open", "open_same") and not mp_held:
             dday = sig if cfg.sp_entry == "open" else t
             sp_enter(t, dday, "open", cfg.sp_extra_slip if cfg.sp_entry == "open_same" else 0.0)
-        # ④ 평소 전략
+        # ④ 평소 전략 (빈 슬롯 수보다 많은 '청산으로 빈 슬롯' 기록은 이미 다른 진입이 쓴 것)
+        sp_freed = min(sp_freed, k - len(pos))
+        mp_freed = max(0, min(mp_freed, k - len(pos) - sp_freed))
         mp_held = any(p["kind"] == "mp" for p in pos.values())
         if not (mp_held and cfg.mp_mode == "allin"):
             if t >= next_rebal and not mp_held:
@@ -302,9 +308,13 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
             for j in cfg.base_top[sig]:
                 if len(pos) >= k:
                     break
-                if buy(int(j), t, "base") and sp_freed > 0:
-                    info["refill_days"].append(t)
-                    sp_freed -= 1
+                if buy(int(j), t, "base"):
+                    if sp_freed > 0:
+                        info["refill_days"].append(t)
+                        sp_freed -= 1
+                    elif mp_freed > 0:                 # 분할 모드: 한 슬롯만 끝나 그 자리를 새 순위로 채움
+                        info["refill_days"].append(t)
+                        mp_freed -= 1
         # ⑤ 장중·종가 청산
         for j in list(pos):
             if j not in pos:
@@ -357,6 +367,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         if mp_active_mode and not mp_held:
             next_rebal = t + 1               # 하이브리드는 패닉 포지션 정리 다음 날 평소 전략 재정렬
             post_mp = True
+            mp_freed = 0
         mp_active_mode = mp_held
         # staged 두 번째 슬롯 신호 (오늘 종가 기준 → 내일 시가)
         if stage and not stage["done"] and stage["t0"] < t <= stage["until"] and "go" not in stage:

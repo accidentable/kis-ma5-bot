@@ -15,7 +15,7 @@ backtest/lab/panic2_ev_b.py — 패닉 2차 연구 트랙 B (시장 전체 패�
 
   EB1 강도-반응   x · zm · K200p z 구간별 시장(베타) · 선택(깊은 2·5 − EW U200) · Δswitch, 스피어만 · 기울기 CI · LOEO
   EB2 트리거 목록 T0 T1 T2 T3 T4 T5 T7 T6 격자: 빈도 · 에피소드 통계 · 시대별 · Δswitch(K2 top-2 · top-10) · Jaccard
-  EB3 선택 경주   T0 · x ≤ −3% 에서 선택 규칙 37개 (지수 대용 1x · 2x 포함): 베타/잔차 분해 · K2 대비 · 무작위 쌍 · 셔플
+  EB3 선택 경주   T0 · x ≤ −3% 에서 선택 규칙 36개 (지수 대용 1x · 2x 포함): 베타/잔차 분해 · K2 대비 · 무작위 쌍 · 셔플
   EB4 진입 시점   종가 t · 시가 t+1 · 시가 t+2 · 종가 t+2 · 확인(u*) 진입 → 공통 종점 종가 t+10 / t+21, g1 i1 g2 진단
   EB5 국면 나누기 F-a · mkt_on · deepcap · F-c · 변동성 · 연쇄 · 200일선 · CLV · 갭/장중 (+ 월요일 · 연휴 다음 날 보고만)
   EB6 청산 · 슬롯 고정 H 곡선 · 시장 익절 X-MKT · 시장 손절 · 회복 청산 · 전량 2 / 분할 1+1 / 3슬롯(20만원 상한)
@@ -205,8 +205,7 @@ def tops(F, name, days, n):
 
 
 def kospi_l(F, days, n=10):
-    """KOSPI-L (설계 EB3: KOSPI & caprank ≤ 200 = U200 & 그날 KOSPI), ret1 깊은 순.
-    저장된 top_KPL 은 KOSPI 안 시총 200위(kprank1)라 전체 200위 밖 종목이 섞인다."""
+    """KOSPI-L (설계 EB3: KOSPI & caprank ≤ 200 = U200 & 그날 KOSPI), ret1 깊은 순 (캐시 top_KPL 과 같은 정의)."""
     days = np.asarray(days, np.int64)
     out = np.full((len(days), n), -1, np.int64)
     for i, t in enumerate(days):
@@ -487,12 +486,12 @@ def eb2(F, t0, t1, X):
 # ════════════════════════════════════════════════════════════
 CACHED3 = [("K2", "K2"), ("S-RES", "SRES"), ("S-RES3", "SRES3"), ("S-BETA", "SBETA"), ("S-LEAD k5 q.90", "SLEAD"),
            ("S-LOSER L120", "SLOSER"), ("LVOL", "LVOL"), ("HMOM", "HMOM"), ("S-SECREL m5", "SSECREL"),
-           ("S-HVOL", "SHVOL"), ("S-IBS", "SIBS"), ("KOSPI-L", "KPLU"), ("KOSPI-L (KOSPI 안 200위)", "KPL"),
+           ("S-HVOL", "SHVOL"), ("S-IBS", "SIBS"), ("KOSPI-L", "KPLU"),
            ("KOSDAQ-L", "KQL"), ("K1 관심", "K1"), ("S-MEGA", "SMEGA"), ("K2-EP", "K2EP")]
 ORDER3 = ["K2", "K2 업종≤1", "S-RES", "S-RES 업종≤1", "S-RES3", "S-BETA", "S-LEAD k5 q.90", "S-LEAD k5 q.85",
           "S-LEAD k5 q.95", "S-LEAD k20 q.85", "S-LEAD k20 q.95", "S-LOSER L60", "S-LOSER L120", "S-LOSER L250", "LVOL",
           "HMOM", "S-SECREL m5", "S-SECREL m10", "약한 업종 대장", "강한 업종 대장", "S-HVOL", "S-LVOL", "S-HVOL 관심",
-          "S-LVOL 관심", "S-IBS", "KOSPI-L", "KOSPI-L (KOSPI 안 200위)", "KOSDAQ-L", "K1 관심", "S-MEGA", "K2-EP",
+          "S-LVOL 관심", "S-IBS", "KOSPI-L", "KOSDAQ-L", "K1 관심", "S-MEGA", "K2-EP",
           "EW U200", "STAY (평소 top-2)",
           "K200p 1x", "K200p 2x", "KQ150p 1x", "KQ150p 2x"]
 
@@ -730,8 +729,8 @@ def eb3(F, t0, t1, X):
             L += ["", f"{lab}: {len(rows)}일 · {E} 에피소드 — top-2 net (에피소드 평균)", ""] + Tc
     L.append("S-LEAD 격자는 p=t−k 에 봇 후보 풀(시총 200 · c/hi250 ≥ q · ret60>0 · max20<10%) 안 ret3 오름차순. 업종 규칙은 "
              "미분류를 한 묶음으로 (critique). 업종 대장 = SR 최저/최고 2개 업종(이름 있는, 5개↑)의 전날 시총 1위. S-LVOL 은 "
-             "하락 종목 중 rrv 하위 1/3. 관심 = attn20 (전날까지 20일 거래대금 50위). KOSPI-L = U200(전날 시총 200위) & KOSPI (설계), "
-             "'KOSPI 안 200위' 는 저장된 top_KPL (참고용). 지수 top-10 = top-2 와 같은 한 종목. "
+             "하락 종목 중 rrv 하위 1/3. 관심 = attn20 (전날까지 20일 거래대금 50위). KOSPI-L = U200(전날 시총 200위) & KOSPI (설계). "
+             "지수 top-10 = top-2 와 같은 한 종목. "
              "β·x = 종목별 b*(t−1 까지 창) × 같은 창 유동 시장 EW gross, 잔차 = gross − β·x. LOYO = 에피소드 첫날 연도 하나씩 뺀 "
              "평균의 최소. 무작위쌍 · 셔플 백분위는 gross 에피소드 평균끼리 비교 (seed 고정).")
     return L, out
@@ -1096,7 +1095,7 @@ def eb6(F, t0, t1, X):
 
     def fv(t, key, held, cap=None, k=1):
         """t 의 후보 목록에서 보유 중이 아니고 (가격 상한) 시가 t+1 에 살 수 있는 첫 k 종목 → [(종목, net 5d)].
-        건너뛰기는 진입 가능 여부(시가 t+1 에 아는 것)로만 정한다. 청산가가 없으면 (상장폐지 등) net = NaN → 그 에피소드는 빠진다."""
+        건너뛰기는 진입 가능 여부(시가 t+1 에 아는 것)로만 정한다. 다시 거래되지 않으면 (상장폐지 등) 마지막 거래 종가로 평가."""
         o = []
         for j in getattr(F, "top_" + key)[t]:
             j = int(j)
@@ -1189,7 +1188,7 @@ def eb6(F, t0, t1, X):
              "그날 목록 1위 (보유 제외) 로 2슬롯 (평소 순위 1 을 판다). 2슬롯 발동 원인 (새 T0 / M 하락 / 없음): "
              + ", ".join(f"D={k:.0%} {v['T0']}/{v['M']}/{v['없음']}" for k, v in cause.items())
              + ". 3슬롯: 같은 에피소드 패닉일마다 20만원 이하 1위 종목, 평소 비교는 top_base 3위→1위 순. "
-               "시가 t+1 에 살 수 없는 후보만 건너뛰고 다음 순위 (청산가 유무는 보지 않음; 청산가가 없으면 그 에피소드 제외).")
+               "시가 t+1 에 살 수 없는 후보만 건너뛰고 다음 순위 (청산가 유무는 보지 않음; 다시 거래되지 않으면 마지막 거래 종가로 평가).")
     return L, out
 
 

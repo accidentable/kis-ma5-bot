@@ -114,24 +114,58 @@ def fwd_path(F, t, j, entry: str, hmax: int):
     return out
 
 
-def base_gross(F, t, entry: str, h: int, which=(0, 1)):
-    """같은 창에서 평소 전략 순위 which 종목들의 평균 비용 전 수익률. 순위는 날짜 t 의 top_base
-    (당일 시가 진입 open_same 은 시가에 아는 t−1 순위 — 시뮬레이터가 그 순위로 판다)."""
+HELD_LAGS = 21      # 평소 전략은 21일마다 교체 → 전환일의 보유 = 0 ~ 20일 전 교체 때 산 상위 2 (대회 시작일이 고르게 퍼져 있다)
+
+
+def base_gross(F, t, entry: str, h: int, which=(0, 1), held: bool = True):
+    """같은 창에서 '평소 전략이 전환 시점에 들고 있던' 종목들의 평균 비용 전 수익률 (Delta 의 비교 대상).
+
+    held=True (기본): 전환일 d (진입 규칙의 진입일) 에 봇이 들고 있는 건 그 전 교체일 s (d−20 ≤ s ≤ d) 에 산
+      top_base[s−1][:2] 다. 교체 시차 k = 0..20 을 똑같은 가중으로 평균한다 (폭락일 당일 순위는 덜 빠진 종목으로
+      바뀌어 있어 비교 대상으로 쓰면 Delta 가 부풀려진다).
+      which=(0, 1): 두 종목 평균 / (1,): 그중 순위 낮은 쪽 (하이브리드가 파는 쪽) / (0,): 순위 높은 쪽.
+      순위는 전환 결정 시점의 top_base (시가 전환은 d−1, 종가 전환은 d; 당일 시가 진입은 시가에 아는 d−1).
+    held=False: 예전 정의 — 날짜 t 의 top_base 순위 which 종목.
+    당일 시가 진입(open_same)의 추가 슬리피지는 사건 쪽에만 물린다 (평소 보유는 그냥 시가에 판다)."""
     t = np.asarray(t, np.int64)
-    rd = t - 1 if entry == "open_same" else t
-    entry = "open_same0" if entry == "open_same" else entry     # 평소 보유는 추가 슬리피지 없이 시가에 판다
-    acc = np.zeros(len(t))
-    cnt = np.zeros(len(t))
-    for w in which:
-        jj = F.top_base[rd, w].astype(np.int64)
-        v = jj >= 0
-        g = np.full(len(t), np.nan)
-        if v.any():
-            g[v] = fwd(F, t[v], jj[v], entry, h)[1]
-        ok = np.isfinite(g)
-        acc[ok] += g[ok]
-        cnt[ok] += 1
-    return np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
+    ent = "open_same0" if entry == "open_same" else entry
+    d = t + ENTRY_DAY[entry]
+    rd = d if entry in ("close", "close1", "close2") else d - 1
+    if not held:
+        rd0 = t - 1 if entry == "open_same" else t
+        acc = np.zeros(len(t))
+        cnt = np.zeros(len(t))
+        for w in which:
+            jj = F.top_base[rd0, w].astype(np.int64)
+            v = jj >= 0
+            g = np.full(len(t), np.nan)
+            if v.any():
+                g[v] = fwd(F, t[v], jj[v], ent, h)[1]
+            ok = np.isfinite(g)
+            acc[ok] += g[ok]
+            cnt[ok] += 1
+        return np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
+    n = len(t)
+    lags = np.arange(HELD_LAGS)
+    bday = np.clip(d[:, None] - 1 - lags[None, :], 0, F.T - 1)                  # n × 21 교체 신호일
+    J = np.stack([F.top_base[bday, 0], F.top_base[bday, 1]], axis=-1).astype(np.int64)   # n × 21 × 2
+    tt = np.broadcast_to(t[:, None, None], J.shape)
+    g = np.full(J.shape, np.nan)
+    v = J >= 0
+    if v.any():
+        g[v] = fwd(F, tt[v], J[v], ent, h)[1]
+    if tuple(which) == (0, 1):
+        per = np.nanmean(g, axis=2)
+    else:
+        rk_row = np.asarray(F.top_base[np.clip(rd, 0, F.T - 1)]).astype(np.int64)      # n × 12
+        pos = np.where(J[..., None] == rk_row[:, None, None, :], np.arange(rk_row.shape[1])[None, None, None, :], 99)
+        pos = pos.min(axis=3)                                                    # n × 21 × 2 (목록에 없으면 99)
+        pos = np.where(v, pos, -1)
+        worse = (pos[..., 1] > pos[..., 0]).astype(int)                          # 1 이면 두 번째가 순위 낮음
+        pick = worse if tuple(which) == (1,) else 1 - worse
+        per = np.take_along_axis(g, pick[..., None], axis=2)[..., 0]
+    out = np.nanmean(per, axis=1)
+    return np.where(np.isfinite(per).any(axis=1), out, np.nan)
 
 
 def same_day_ew(F, days, universe: np.ndarray, entry: str, h: int) -> dict:

@@ -169,7 +169,7 @@ def build() -> dict:
     zm = x / sig_m
     put("sig_m", sig_m, np.float64)
     put("zm", zm, np.float64)
-    r = np.clip(ret1, -0.3, 0.3)
+    r = np.where(traded, np.clip(ret1, -0.3, 0.3), np.nan)       # 정지일(거래대금 0 · 묵은 종가)은 관측에서 뺀다
     br = np.where(liquid, (ret1 <= -0.03).astype(float), np.nan)
     breadth3 = np.nanmean(br, axis=1)
     put("breadth3", breadth3, np.float64)
@@ -347,13 +347,18 @@ def build() -> dict:
     sid = {s: i for i, s in enumerate(secs)}
     col = np.array([sid.get(labd.get(cd), -1) for cd in m.codes], dtype=np.int32)
     S = len(secs)
-    colx = np.where(col >= 0, col, S)                  # 미분류 = S
+    # 스냅샷(2018-11)에 없는 종목: 그 뒤 상장이면 '신규 상장' 한 묶음(S). 그 전부터 있던 종목이 없다는 건 대부분 2018-11 전에
+    # 상장폐지됐다는 뜻(미래 정보)이라, 이들은 업종 또래 계산에서 빼고(S+1) secx · sbreadth 는 NaN, SRi 는 시장 평균 x 로 둔다.
+    first = np.argmax(np.isfinite(c), axis=0)
+    snap = int(np.searchsorted(dates, "20181101"))
+    colx = np.where(col >= 0, col, np.where(first >= snap, S, S + 1))
     put("sector", col, np.int32)
-    # 같은 업종 다른 종목 평균 (secx) · 3%↓ 비중 (sbreadth): 가격 유효 · 1,000원↑ · 전날 20일 거래대금 10억↑
-    peer = np.isfinite(c) & (m.raw >= 1000) & (val20p >= 1e9)
+    put("sector_group", colx, np.int32)
+    # 같은 업종 다른 종목 평균 (secx) · 3%↓ 비중 (sbreadth): 거래됨 · 1,000원↑ · 전날 20일 거래대금 10억↑
+    peer = traded & (m.raw >= 1000) & (val20p >= 1e9)
     rp = np.where(peer, np.nan_to_num(r), 0.0)
     dn3 = np.where(peer, (np.nan_to_num(ret1) <= -0.03).astype(float), 0.0)
-    oh = np.zeros((N, S + 1))
+    oh = np.zeros((N, S + 2))
     oh[np.arange(N), colx] = 1.0
     sum_r = rp @ oh
     sum_n = peer.astype(float) @ oh
@@ -362,8 +367,9 @@ def build() -> dict:
     pr = sum_r[:, colx] - own_r
     pn = sum_n[:, colx] - own_n
     pd_ = sum_d[:, colx] - own_d
-    secx = np.where(pn >= 4, pr / np.maximum(pn, 1), np.nan)            # 미분류(2018 뒤 상장 등)는 한 묶음 (검토 의견 2)
-    sbreadth = np.where(pn >= 4, pd_ / np.maximum(pn, 1), np.nan)
+    known = (colx <= S)[None, :]
+    secx = np.where((pn >= 4) & known, pr / np.maximum(pn, 1), np.nan)   # 2018 뒤 신규 상장은 한 묶음 (검토 의견 2)
+    sbreadth = np.where((pn >= 4) & known, pd_ / np.maximum(pn, 1), np.nan)
     put("secx", secx)
     put("sbreadth", sbreadth)
     # S-SECREL 용 업종 평균 (ok & val20 ≥ 30억, 5개↑; 미분류도 한 묶음)
@@ -371,7 +377,7 @@ def build() -> dict:
     sr_sum = np.where(mem, np.nan_to_num(r), 0.0) @ oh
     sr_n = mem.astype(float) @ oh
     SR = np.where(sr_n >= 5, sr_sum / np.maximum(sr_n, 1), np.nan)
-    SRi = SR[:, colx]
+    SRi = np.where(known, SR[:, colx], x[:, None])
     put("SRi", SRi)
     del rp, dn3, pr, pn, pd_, sum_r, sum_n, sum_d, own_r, own_n, own_d, sr_sum, sr_n, SR, oh, peer, mem
     print(f"  업종 {time.time() - t_start:.0f}s", flush=True)

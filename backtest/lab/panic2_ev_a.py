@@ -113,8 +113,8 @@ class Ctx:
         self.cur, self._seen, self._nox = None, {}, {}
 
     def fwd(self, t, j, entry, h):
-        """C.fwd + 진입은 되는데 청산일(데이터 안)부터 끝까지 거래가 없어 빠지는 사건 (상폐 등) 을 조사별로 기록.
-        기록 값 = 마지막 거래 종가로 잰 비용 전 수익 (stale mark)."""
+        """C.fwd + 청산일(데이터 안)부터 끝까지 거래가 없는 사건 (상폐 등) 을 조사별로 기록. 이런 사건은 C.fwd 가
+        마지막 거래 종가(clast)로 평가해 통계에 들어간다. 기록 값 = 그 평가로 잰 비용 전 수익 (stale mark)."""
         F = self.F
         t, j = np.asarray(t, np.int64), np.asarray(j, np.int64)
         net, g = C.fwd(F, t, j, entry, h)
@@ -122,14 +122,12 @@ class Ctx:
             return net, g
         self._seen.setdefault(self.cur, []).append(t * F.N + j)
         u = t + h + C.EXIT_OFF[entry]
-        miss = ~np.isfinite(net) & (u < F.T)
-        if miss.any():
-            ep = C.entry_price(F, t[miss], j[miss], entry)
+        uu = np.minimum(u, F.T - 1)
+        stale = (u < F.T) & np.isfinite(g) & ~np.isfinite(np.asarray(F.cnext[uu, j], np.float64))
+        if stale.any():
             d = self._nox.setdefault(self.cur, {})
-            for tt, jj, uu, e in zip(t[miss], j[miss], u[miss], ep):
-                if np.isfinite(e):
-                    k = np.where(F.traded[tt:uu + 1, jj])[0]
-                    d[int(tt * F.N + jj)] = float(F.c[tt + k[-1], jj] / e - 1) if len(k) else float("nan")
+            for tt, jj, gg in zip(t[stale], j[stale], g[stale]):
+                d[int(tt * F.N + jj)] = float(gg)
         return net, g
 
     def s(self, nm, k=0):
@@ -491,8 +489,7 @@ def ea3(X):
 
 
 def ea3b(X):
-    # 시가 t 에 아는 정보만 쓰도록 여기서 다시 만든다. 캐시 m_SA8 · gz 는 EW 갭을 그날 liquid (그날 거래대금이 든
-    # val20_t) 로, 30만원 조건을 그날 종가 raw_t 로 잡아 시가 시점에는 모르는 값이 섞인다.
+    # 시가 t 에 아는 정보만으로 여기서 다시 만든다 (전날 liquid · 전날 raw). 캐시 m_SA8 · gz 도 같은 규칙이라 개수가 같아야 한다.
     gap = X.s("gap")
     ewg = np.nanmean(np.where(X.s("liquid", 1) & np.isfinite(gap), np.clip(gap, -0.3, 0.3), np.nan), 1)
     gz = (gap - X.s("bstar") * ewg[:, None]) / X.s("sig")
@@ -520,7 +517,7 @@ def ea3b(X):
     L += tbl(["G", "선택", "청산", "건수", "연간", "평균", "중앙", "승률", "초과", "t", "상위5일"]
              + [f"{e} 초과" for e in X.eras], rows)
     L += ["해석: 초과 기준은 전날 U200 & 오늘 거래된 종목의 같은 날 EW (같은 시가 t 진입 · 같은 청산). 상위2 는 gz 낮은 순. "
-          f"캐시 m_SA8 (그날 liquid · 그날 raw 사용) 과 비교: {' / '.join(diff)}.", ""]
+          f"캐시 m_SA8 (같은 규칙: 전날 liquid · 전날 raw) 과 비교: {' / '.join(diff)}.", ""]
     return L, sm
 
 
@@ -552,10 +549,10 @@ def ea4(X):
     F = X.F
     CF, r1, cr1 = X.s("CF"), X.s("ret1"), X.s("cr1")
     secx, sbr = X.s("secx"), X.s("sbreadth")
-    sec = np.asarray(F.sector).astype(np.int64)
-    S_ = len(F.sectors)
+    sec = np.asarray(F.sector_group).astype(np.int64)   # 0..S−1 업종, S = 2018-11 뒤 신규 상장 한 묶음, S+1 = 스냅샷 전 상장인데 라벨 없음
+    S_ = len(F.sectors) + 1
     labd = np.isfinite(secx)
-    nolab = (sec < 0)[None, :]
+    nolab = (sec >= S_)[None, :]            # 스냅샷 전부터 있었는데 라벨 없음 (대부분 2018-11 전 상장폐지 — 또래 계산에서 뺌)
     rows, rows_p, sm, sens = [], [], {}, []
 
     def row(tag, t, j, U, un, out=rows, store=None):
@@ -578,7 +575,7 @@ def ea4(X):
             row(rt + ["-", "SINGLE"], *X.ev(e0 & (secx >= -0.01)), U, un)
             row(rt + ["-", "라벨 없음"], *X.ev(e0 & nolab), U, un)
             row(rt + ["-", "업종 동료<4"], *X.ev(e0 & ~labd & ~nolab), U, un)
-            cand = CF & U & (r1 <= -R / 2) & (sec >= 0)[None, :]
+            cand = CF & U & (r1 <= -R / 2) & (sec < S_)[None, :]
             for S in (0.02, 0.04):
                 sect = e0 & (secx <= -S) & (sbr >= 0.5)
                 mix = e0 & labd & ~(secx >= -0.01) & ~sect
@@ -1055,7 +1052,7 @@ def run(F, period: str):
          "순수익 = 왕복 0.35% 뺀 FIX-h (진입일 = 1일차, 정지일은 다음 거래 종가). 초과 = 같은 날 같은 유니버스 EW 대비 (비용 전끼리), "
          "t = 날짜 평균 계열 Newey–West (시차 h−1) 라 날짜 가중이다 (사건 가중 평균과 부호가 다를 수 있음). "
          "CF = ok · x>−2% · t−5..t T0 없음 · ret1>−20% · 하한가 · 배당락 · bad20 아님. "
-         "청산 가격이 끝내 없는 사건 (상폐 등) 은 C.fwd 규칙대로 통계에서 빠진다 (EA9 에 건수).", ""]
+         "청산일 뒤로 다시 거래되지 않는 사건 (상폐 등) 은 C.fwd 규칙대로 마지막 거래 종가로 평가해 포함한다 (맨 끝 점검 표).", ""]
     S = {"period": period, "t0": F.dates[X.t0], "t1": F.dates[X.t1 - 1]}
     tm = {}
     with warnings.catch_warnings():
@@ -1068,7 +1065,7 @@ def run(F, period: str):
             S[nm] = sm
             tm[nm] = round(time.time() - a, 1)
     X.cur = None
-    # 점검: 청산 가격이 없어 (진입 뒤 데이터 안에서 끝까지 거래 없음: 상폐 등) C.fwd 가 NaN 으로 뺀 사건
+    # 점검: 청산일 뒤로 다시 거래되지 않아 (상폐 등) 마지막 거래 종가로 평가된 사건
     rows, nox = [], {}
     for nm, _ in STUDIES:
         seen = len(np.unique(np.concatenate(X._seen[nm]))) if X._seen.get(nm) else 0
@@ -1076,11 +1073,11 @@ def run(F, period: str):
         v = np.array(list(d.values()), float)
         nox[nm] = {"events": seen, "no_exit": len(d), "stale_mean": M(v)}
         rows.append([nm, seen, len(d), f"{len(d) / seen * 100:.2f}%" if seen else "-", P(M(v))])
-    L += ["### 점검: 청산 가격 없음으로 빠진 사건 (상폐 등)", "",
-          "C.fwd 규칙상 청산일 뒤로 거래가 한 번도 없으면 수익이 NaN 이라 위 모든 표에서 빠진다 (생존 편향 쪽). "
-          "고유 종목·일 기준 건수와, 마지막 거래 종가로 잰 비용 전 수익 (stale mark; 다음 날부터 거래가 없으면 0) 평균. "
+    L += ["### 점검: 마지막 거래 종가로 평가된 사건 (상폐 등)", "",
+          "C.fwd 규칙상 청산일 뒤로 거래가 한 번도 없으면 마지막 거래 종가로 평가해 위 표에 포함된다. 장기 정지 뒤 상폐면 "
+          "실제(정리매매)보다 낙관적이다. 고유 종목·일 기준 건수와 그 평가의 비용 전 수익 평균. "
           "EA3 밤사이 · REC · TPSL · EXIT-MA 경로는 세지 않음.", ""]
-    L += tbl(["조사", "고유 사건", "청산 없음", "비중", "stale mark 평균"], rows)
+    L += tbl(["조사", "고유 사건", "마지막 거래가 평가", "비중", "그 평균 (비용 전)"], rows)
     S["noexit"] = nox
     S["headline"] = headline(S)
     S["timing_s"] = tm
