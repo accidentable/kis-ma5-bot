@@ -182,7 +182,8 @@ def build() -> dict:
     gap = o / prev - 1
     gap[~traded] = np.nan
     put("gap", gap)
-    ew_gap = np.nanmean(np.where(liquid & np.isfinite(gap), np.clip(gap, -0.3, 0.3), np.nan), axis=1)
+    liquid_p = shift(liquid.astype(float), 1) > 0          # 시가에 아는 정보: 전날 기준 유동 종목
+    ew_gap = np.nanmean(np.where(liquid_p & np.isfinite(gap), np.clip(gap, -0.3, 0.3), np.nan), axis=1)
     put("ew_gap", ew_gap, np.float64)
     intra = c / o - 1
     intra[~traded] = np.nan
@@ -329,7 +330,14 @@ def build() -> dict:
         last = np.where(np.isfinite(cn_[t]), cn_[t], last)
         nxt[t] = last
     put("cnext", nxt)
-    del cn_, nxt
+    # 마지막 거래 종가 (그날 이전 · 포함) — 다시 거래되지 않는 (상장폐지) 종목의 청산 가격
+    lst = np.full((T, N), np.nan)
+    last = np.full(N, np.nan)
+    for t in range(T):
+        last = np.where(np.isfinite(cn_[t]), cn_[t], last)
+        lst[t] = last
+    put("clast", lst)
+    del cn_, nxt, lst
 
     # ── 업종 (2018 스냅샷, 없는 종목은 '미분류' 한 묶음)
     import pandas as pd
@@ -354,8 +362,8 @@ def build() -> dict:
     pr = sum_r[:, colx] - own_r
     pn = sum_n[:, colx] - own_n
     pd_ = sum_d[:, colx] - own_d
-    secx = np.where((pn >= 4) & (col >= 0)[None, :], pr / np.maximum(pn, 1), np.nan)
-    sbreadth = np.where((pn >= 4) & (col >= 0)[None, :], pd_ / np.maximum(pn, 1), np.nan)
+    secx = np.where(pn >= 4, pr / np.maximum(pn, 1), np.nan)            # 미분류(2018 뒤 상장 등)는 한 묶음 (검토 의견 2)
+    sbreadth = np.where(pn >= 4, pd_ / np.maximum(pn, 1), np.nan)
     put("secx", secx)
     put("sbreadth", sbreadth)
     # S-SECREL 용 업종 평균 (ok & val20 ≥ 30억, 5개↑; 미분류도 한 묶음)
@@ -438,7 +446,7 @@ def build() -> dict:
         "SHVOL": np.where(dec & (rrv >= cut[:, None]), -ret1, np.nan),
         "SIBS": np.where(U200 & (ibs >= 0.3), -ret1, np.nan),
         "KQL": np.where(ok & (lab == 2) & (kqrank1 <= 100), -ret1, np.nan),
-        "KPL": np.where(ok & (lab == 1) & (kprank1 <= 200), -ret1, np.nan),
+        "KPL": np.where(U200 & (lab == 1), -ret1, np.nan),                 # 설계: KOSPI & 시총 200
         "SBETA": np.where(dec, bstar, np.nan),
         "SMEGA": np.where(ok & (cr1 <= 30), -ret1, np.nan),
         "K2EP": np.where(U200, -ep_dd, np.nan),
@@ -490,11 +498,12 @@ def build() -> dict:
     SA4 = CF & pre & (dd <= -2.5) & (z <= -2) & (ret1 > -0.15)
     SA5 = CF & MIDQ & (z <= -3.5) & (ret1 <= -0.05) & (vr <= 2)
     SA6 = CF & U200 & (nd >= 5) & (icum <= -0.06) & (wst >= -0.04) & ((M / shift(M, 5) - 1) > -0.04)[:, None]
-    SA7 = CF & U200 & (col >= 0)[None, :] & (ret1 <= -0.05) & (secx <= -0.03) & (sbreadth >= 0.5) & ((ret1 - secx) > -0.05)
+    SA7 = CF & U200 & (ret1 <= -0.05) & (secx <= -0.03) & (sbreadth >= 0.5) & ((ret1 - secx) > -0.05)
     # SA8 시가 갭 되돌림: 시가에 아는 정보만 (전날 유니버스, 오늘 갭, 오늘 시장 갭)
     U200p = shift(U200.astype(float), 1) > 0
     gz = (gap - bstar * ew_gap[:, None]) / sig
-    gapbase = (U200p & traded & (m.raw <= 300_000) & ~bad20 & ~divx[:, None]
+    rawp = shift(m.raw.astype(np.float64), 1)
+    gapbase = (U200p & traded & (rawp <= 300_000) & ~bad20 & ~divx[:, None]
                & (ew_gap > -0.01)[:, None] & (gz <= -3))
     SA8 = gapbase & (gap <= -0.04)
     SA8b = gapbase & (gap <= -0.07)
@@ -557,7 +566,7 @@ def didx(F, d: str) -> int:
 
 def market_of(F, extra_index: str | None = None):
     """시뮬레이터용 Market 객체 (panic_sim2.run_month 가 쓰는 필드만). extra_index='k200' 이면 합성 지수 열을 붙인다."""
-    ind = {"mkt": F.M, "ret1": F.ret1, "ma5": F.ma5}
+    ind = {"mkt": F.M, "ret1": F.ret1, "ma5": F.ma5, "cnext": F.cnext}
     arrs = {k: getattr(F, k) for k in ("o", "h", "l", "c", "raw", "val", "cap")}
     if extra_index:
         nav, navo = getattr(F, f"{extra_index}_nav"), getattr(F, f"{extra_index}_open")
@@ -567,7 +576,8 @@ def market_of(F, extra_index: str | None = None):
         col["l"] = np.minimum(col["o"], col["c"])
         arrs = {k: np.hstack([a, col[k][:, None].astype(np.float32)]) for k, a in arrs.items()}
         ind = {"mkt": F.M, "ret1": np.hstack([F.ret1, np.zeros((F.T, 1), np.float32)]),
-               "ma5": np.hstack([F.ma5, np.full((F.T, 1), np.inf, np.float32)])}
+               "ma5": np.hstack([F.ma5, np.full((F.T, 1), np.inf, np.float32)]),
+               "cnext": np.hstack([F.cnext, col["c"][:, None].astype(np.float32)])}
     return E.Market(F.dates, F.codes, F.names, arrs["o"], arrs["h"], arrs["l"], arrs["c"], arrs["raw"], arrs["val"],
                     arrs["cap"], ind)
 

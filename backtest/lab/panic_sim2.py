@@ -34,6 +34,7 @@ class Exit:
     mkt_stop: float = 0.0        # 시장지수 M 이 기준일 대비 −Y 이하인 종가에 매도
     rec_arr: np.ndarray | None = None   # REC 판정을 바꿔 끼울 T×N bool (종가 잡음 검사용). None 이면 c ≥ ma5
     defer_all: bool = False      # 종가에 정하는 모든 청산(보유 만료 · REC · FAIL · 시장 · 급등)을 다음 날 시가로 (강건성 검사용)
+    defer_rules: bool = False    # 정확한 종가가 필요한 청산(REC · FAIL · 시장 · 급등)만 다음 날 시가로. 보유 만료는 그대로 종가
 
 
 @dataclass
@@ -67,15 +68,18 @@ class Hybrid:
 def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, force_rebal=None, force_swap=None):
     """반환: (월 수익률, 정보 dict).
 
-    force_rebal: 이 날들 시가에 평소 전략을 다시 정렬한다 (대조군 R0-REFRESH: 하이브리드가 평소 전략으로 돌아온 날)
-    force_swap:  이 날들 시가에 평소 보유 중 순위 가장 낮은 것이 상위 k 밖이면 1종목 교체 (트랙 A 대조군)
-    info: mp_entries / sp_entries (신호일), rebal_days (패닉 청산 뒤 재정렬한 날), refill_days (종목 패닉 청산 뒤
-          빈 슬롯을 채울 수 있는 첫날), trades [(종류, 진입일, 청산일, 수익률)], halt_end
+    force_rebal: 이 날들 시가에 평소 전략을 다시 정렬한다 (대조군 R0-REFRESH: 하이브리드가 실제로 재정렬한 날)
+    force_swap:  이 날들 시가에 평소 보유 중 순위 가장 낮은 것이 상위 k 밖이면 1종목 교체 (트랙 A 대조군:
+                 하이브리드가 종목 패닉 청산으로 빈 슬롯을 평소 종목으로 실제로 채운 날)
+    info: mp_entries / sp_entries (신호일), rebal_days (패닉 청산 뒤 실제로 재정렬한 날), refill_days (종목 패닉 청산으로
+          빈 슬롯을 평소 종목으로 실제로 채운 날), trades [(종류, 진입일, 청산일, 수익률)], halt_end (마지막 날 정지 보유 수),
+          ret_alt (정지 보유를 정지 뒤 첫 거래 종가로 평가한 월 수익률)
     """
     force_rebal = force_rebal or ()
     force_swap = force_swap or ()
     I = m.ind
     M = I["mkt"]
+    cnext = I.get("cnext")
     e = min(s + E.MONTH - 1, m.T - 1)
     cash = float(capital)
     slot = capital / k
@@ -84,7 +88,9 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
     info = {"mp_entries": [], "sp_entries": [], "halt_end": 0, "entries": 0, "rebal_days": [], "refill_days": [],
             "trades": []}
     next_rebal = s
-    mp_active_mode = None
+    mp_active_mode = False
+    post_mp = False          # 패닉 청산 뒤 재정렬이 예약됐고 아직 안 됨
+    sp_freed = 0             # 종목 패닉 청산으로 비었고 아직 다른 것으로 안 채운 슬롯 수
     stage = {}
     ep_count: dict = {}
 
@@ -101,24 +107,34 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
             return max(0.0005, 2.5 / max(raw_px(t, j, px), 1))
         return E.slip(raw_px(t, j, px))
 
-    def sell(j, t, px, extra=0.0, at_open=False):
-        nonlocal cash
-        p = pos.pop(j)
+    def proceeds(j, t, px, extra=0.0):
+        p = pos[j]
         tax = 0.0 if j == cfg.idx_col else E.TAX
         net = px * (1 - slip_of(t, j, px) - extra) * (1 - E.FEE - tax)
-        cash += p["cost"] * net / p["ea"]
+        return p["cost"] * net / p["ea"], net
+
+    def sell(j, t, px, extra=0.0, at_open=False):
+        nonlocal cash, sp_freed
+        v, net = proceeds(j, t, px, extra)
+        p = pos.pop(j)
+        cash += v
         pend_open.discard(j)
         if p["kind"] != "base":
             info["trades"].append((p["kind"], p["t0"], t, net / p["ea"] - 1))
             if p["kind"] == "sp":
-                info["refill_days"].append(t if at_open else t + 1)
+                sp_freed += 1
+
+    def close_sellable(j, t):
+        if not traded(t, j):
+            return False
+        lim = 0.15 if m.dates[t] < "20150615" else 0.30
+        return cfg.legacy or not (m.c[t - 1, j] > 0 and m.c[t, j] <= m.c[t - 1, j] * (1 - lim + 0.005) and t < e)
 
     def try_sell_close(j, t):
         """종가 매도. 정지면 못 팔고, 하한가 마감이면 다음 날 시가로 미룬다."""
         if not traded(t, j):
             return False
-        lim = 0.15 if m.dates[t] < "20150615" else 0.30
-        if not cfg.legacy and m.c[t - 1, j] > 0 and m.c[t, j] <= m.c[t - 1, j] * (1 - lim + 0.005) and t < e:
+        if not close_sellable(j, t):
             pend_open.add(j)
             return False
         sell(j, t, float(m.c[t, j]))
@@ -130,21 +146,29 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         sell(j, t, float(m.o[t, j]), at_open=True)
         return True
 
-    def buy(j, t, kind, ex=None, at="open", extra=0.0, anchor=-1):
-        nonlocal cash
-        if j in pos or len(pos) >= k or not traded(t, j):
-            return False
+    def fill_qty(j, t, at, extra, budget_cash):
+        """살 수 있으면 (수량, 체결가 raw, 조정가, 슬리피지). 못 사면 None."""
+        if j in pos or not traded(t, j):
+            return None
         px_adj = m.c[t, j] if at == "close" else m.o[t, j]
         cp = m.c[t - 1, j]
         if not (px_adj > 0) or not (cp > 0) or px_adj >= cp * 1.295:
-            return False
+            return None
         rp = raw_px(t, j, px_adj)
         sl = slip_of(t, j, px_adj) + extra
         px = rp * (1 + sl)
-        budget = cash if j == cfg.idx_col else min(cash, slot)
+        budget = budget_cash if j == cfg.idx_col else min(budget_cash, slot)
         q = int(budget / (px * (1 + E.FEE)))
-        if q < 1:
+        return (q, px, px_adj, sl) if q >= 1 else None
+
+    def buy(j, t, kind, ex=None, at="open", extra=0.0, anchor=-1):
+        nonlocal cash
+        if len(pos) >= k:
             return False
+        f = fill_qty(j, t, at, extra, cash)
+        if f is None:
+            return False
+        q, px, px_adj, sl = f
         cost = q * px * (1 + E.FEE)
         cash -= cost
         pos[j] = {"cost": cost, "ea": px_adj * (1 + sl) * (1 + E.FEE), "t0": t, "kind": kind, "exit": ex,
@@ -165,6 +189,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
 
     def mp_open_entry(t, sig, n_slots):
         """시장 패닉 시가 진입: 평소 보유를 순위 낮은 것부터 팔아 n_slots 만들고 후보를 산다."""
+        nonlocal sp_freed, post_mp
         rd = int(cfg.mp_rank_day[sig])
         anc = int(cfg.mp_anchor_day[sig]) if cfg.mp_anchor_day is not None else sig
         cands = [int(x) for x in cfg.mp_top[rd]]
@@ -179,7 +204,46 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 break
             if buy(j, t, "mp", cfg.mp_exit, "open", anchor=anc):
                 got += 1
+        if got:
+            sp_freed = 0
+            post_mp = False
         return got
+
+    def sp_enter(t, dday, at, extra):
+        """종목 패닉 REPLACE1: 후보를 순서대로 보며, 살 수 있는 첫 종목을 산다. 빈 슬롯이 없으면 평소 보유 중 순위 가장 낮은
+        것을 같은 동시호가에 판다 — 팔 수 있고 그 돈으로 살 수 있을 때만."""
+        nonlocal sp_freed
+        n_sp = sum(1 for p in pos.values() if p["kind"] == "sp")
+        rank_day = t if at == "close" else t - 1
+        for j in [int(x) for x in cfg.sp_top[dday]]:
+            if n_sp >= cfg.sp_max:
+                break
+            if j in pos:
+                continue
+            if len(pos) < k:
+                if buy(j, t, "sp", cfg.sp_exit, at, extra=extra):
+                    info["sp_entries"].append(dday)
+                    n_sp += 1
+                    sp_freed = max(0, sp_freed - 1)
+                continue
+            wb = worst_base(rank_day)
+            if not wb:
+                break
+            w = wb[0]
+            if at == "close":
+                if not close_sellable(w, t):
+                    break
+                px_w = float(m.c[t, w])
+            else:
+                if not traded(t, w) or not (m.o[t, w] > 0):
+                    break
+                px_w = float(m.o[t, w])
+            if fill_qty(j, t, at, extra, cash + proceeds(w, t, px_w)[0]) is None:
+                continue
+            sell(w, t, px_w, at_open=(at != "close"))
+            if buy(j, t, "sp", cfg.sp_exit, at, extra=extra):
+                info["sp_entries"].append(dday)
+                n_sp += 1
 
     for t in range(s, e + 1):
         sig = t - 1
@@ -187,6 +251,10 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         for j in list(pend_open):
             if j in pos:
                 try_sell_open(j, t)
+        if mp_active_mode and not any(p["kind"] == "mp" for p in pos.values()):
+            next_rebal = t                   # 패닉 포지션이 시가에 정리됐으면 같은 시가에 재정렬
+            post_mp = True
+            mp_active_mode = False
         if t in force_rebal:
             next_rebal = min(next_rebal, t)
         if t in force_swap:
@@ -195,8 +263,9 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
             if wb and wb[0] not in keep:
                 try_sell_open(wb[0], t)
         mp_held = any(p["kind"] == "mp" for p in pos.values())
-        # ② 시장 패닉 (시가 진입)
-        if cfg.mp_sig is not None and cfg.mp_entry == "open" and cfg.mp_sig[sig] and not mp_held:
+        # ② 시장 패닉 (시가 진입). 분할 모드는 진행 중인 10일 창 안의 새 신호로 1단계를 다시 시작하지 않는다
+        in_stage = cfg.mp_mode == "staged" and stage and sig <= stage["until"]
+        if cfg.mp_sig is not None and cfg.mp_entry == "open" and cfg.mp_sig[sig] and not mp_held and not in_stage:
             epi = int(cfg.mp_episode[sig]) if cfg.mp_episode is not None else -1
             allowed = not cfg.mp_max_entries or ep_count.get(epi, 0) < cfg.mp_max_entries
             if allowed:
@@ -204,6 +273,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 if mp_open_entry(t, sig, n):
                     info["mp_entries"].append(sig)
                     ep_count[epi] = ep_count.get(epi, 0) + 1
+                    mp_active_mode = True
                     if cfg.mp_mode == "staged":
                         stage = {"t0": sig, "until": sig + cfg.stage2_window, "done": False,
                                  "anchor": int(cfg.mp_anchor_day[sig]) if cfg.mp_anchor_day is not None else sig}
@@ -211,27 +281,13 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
         if stage and not stage["done"] and stage.get("go") == t:
             if mp_open_entry(t, int(stage["sig2"]), 1):
                 info["mp_entries"].append(int(stage["sig2"]))
+                mp_active_mode = True
             stage["done"] = True
         mp_held = any(p["kind"] == "mp" for p in pos.values())
-        allin = mp_held and cfg.mp_mode == "allin"
         # ③ 종목 패닉 (시가 진입: 다음 날 시가 / 당일 시가)
         if cfg.sp_top is not None and cfg.sp_entry in ("open", "open_same") and not mp_held:
             dday = sig if cfg.sp_entry == "open" else t
-            n_sp = sum(1 for p in pos.values() if p["kind"] == "sp")
-            for j in [int(x) for x in cfg.sp_top[dday]]:
-                if n_sp >= cfg.sp_max:
-                    break
-                if j in pos:
-                    continue
-                if len(pos) >= k:
-                    wb = worst_base(sig)
-                    if not wb or not try_sell_open(wb[0], t):
-                        break
-                if buy(j, t, "sp", cfg.sp_exit, "open", extra=cfg.sp_extra_slip if cfg.sp_entry == "open_same" else 0.0):
-                    info["sp_entries"].append(dday)
-                    n_sp += 1
-                elif cfg.sp_max == 1:
-                    break
+            sp_enter(t, dday, "open", cfg.sp_extra_slip if cfg.sp_entry == "open_same" else 0.0)
         # ④ 평소 전략
         mp_held = any(p["kind"] == "mp" for p in pos.values())
         if not (mp_held and cfg.mp_mode == "allin"):
@@ -240,10 +296,15 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 for j in [x for x in pos if pos[x]["kind"] == "base" and x not in keep]:
                     try_sell_open(j, t)
                 next_rebal = t + 21
+                if post_mp:
+                    info["rebal_days"].append(t)
+                    post_mp = False
             for j in cfg.base_top[sig]:
                 if len(pos) >= k:
                     break
-                buy(int(j), t, "base")
+                if buy(int(j), t, "base") and sp_freed > 0:
+                    info["refill_days"].append(t)
+                    sp_freed -= 1
         # ⑤ 장중·종가 청산
         for j in list(pos):
             if j not in pos:
@@ -287,16 +348,16 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 reason = "hold"
             if reason is None:
                 continue
-            if ((reason == "hold" and ex.at == "next_open") or ex.defer_all) and t < e:
+            if ((reason == "hold" and ex.at == "next_open") or ex.defer_all
+                    or (ex.defer_rules and reason != "hold")) and t < e:
                 pend_open.add(j)
             else:
                 try_sell_close(j, t)
         mp_held = any(p["kind"] == "mp" for p in pos.values())
         if mp_active_mode and not mp_held:
             next_rebal = t + 1               # 하이브리드는 패닉 포지션 정리 다음 날 평소 전략 재정렬
-            info["rebal_days"].append(t + 1)
+            post_mp = True
         mp_active_mode = mp_held
-        sp_held_now = sum(1 for p in pos.values() if p["kind"] == "sp")
         # staged 두 번째 슬롯 신호 (오늘 종가 기준 → 내일 시가)
         if stage and not stage["done"] and stage["t0"] < t <= stage["until"] and "go" not in stage:
             c1 = cfg.stage2_sig is not None and cfg.stage2_sig[t]
@@ -321,30 +382,25 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 if got:
                     info["mp_entries"].append(t)
                     mp_active_mode = True
+                    sp_freed = 0
+                    post_mp = False
         mp_held = any(p["kind"] == "mp" for p in pos.values())
-        if t < e and cfg.sp_top is not None and cfg.sp_entry == "close" and not mp_held and sp_held_now < cfg.sp_max:
-            n_sp = sp_held_now
-            for j in [int(x) for x in cfg.sp_top[t]]:
-                if n_sp >= cfg.sp_max:
-                    break
-                if j in pos:
-                    continue
-                if len(pos) >= k:
-                    wb = worst_base(t)
-                    if not wb or not try_sell_close(wb[0], t):
-                        break
-                if buy(j, t, "sp", cfg.sp_exit, "close"):
-                    info["sp_entries"].append(t)
-                    n_sp += 1
-                elif cfg.sp_max == 1:
-                    break
-    # ⑦ 마지막 날 종가 평가 (정지 종목은 마지막 체결가)
+        if t < e and cfg.sp_top is not None and cfg.sp_entry == "close" and not mp_held:
+            sp_enter(t, t, "close", 0.0)
+    # ⑦ 마지막 날 종가 평가 (정지 종목은 마지막 체결가; ret_alt 는 정지 뒤 첫 거래 종가)
+    alt_diff = 0.0
     for j in list(pos):
         c_ = m.c[e, j]
-        if m.val[e, j] <= 0:
+        halted = m.val[e, j] <= 0
+        if halted:
             info["halt_end"] += 1
         if not (c_ > 0):
             back = np.where(m.c[:e + 1, j] > 0)[0]
             c_ = m.c[back[-1], j] if len(back) else pos[j]["ea"]
+        if halted and cnext is not None and np.isfinite(cnext[e, j]) and cnext[e, j] > 0:
+            v0 = proceeds(j, e, float(c_))[0]
+            v1 = proceeds(j, e, float(cnext[e, j]))[0]
+            alt_diff += v1 - v0
         sell(j, e, float(c_))
+    info["ret_alt"] = (cash + alt_diff) / capital - 1
     return cash / capital - 1, info

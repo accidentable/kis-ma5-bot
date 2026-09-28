@@ -9,7 +9,7 @@ backtest/lab/panic2_common.py — 패닉 2차 연구 공통 도구 (사건 수�
         close1 / close2   t+1 / t+2 종가
   청산  보유 h 일 뒤 종가. 진입일을 1일차로 센다 (대회 FIX 와 같다):
         close → t+h,  open → t+h,  open_same → t+h−1,  open2 → t+1+h,  close1 → t+1+h,  close2 → t+2+h
-        청산일에 거래정지면 그 뒤 처음 거래된 날 종가 (cnext).
+        청산일에 거래정지면 그 뒤 처음 거래된 날 종가 (cnext). 다시 거래되지 않으면 (상장폐지) 마지막 거래 종가 (clast).
   비용  왕복 0.35% (COST). gross 는 비용 전.
 """
 from __future__ import annotations
@@ -20,8 +20,8 @@ COST = 0.0035
 PERIODS = {"IS": ("20110101", "20190101"), "VAL": ("20190101", "20241001"), "TEST": ("20241001", "99999999")}
 ERAS = {"E1": ("20100701", "20150615"), "E2": ("20150615", "20190101"), "E3": ("20190101", "20241001"),
         "E4": ("20241001", "99999999")}
-ENTRY_DAY = {"close": 0, "open": 1, "open_same": 0, "open2": 2, "close1": 1, "close2": 2}
-EXIT_OFF = {"close": 0, "open": 0, "open_same": -1, "open2": 1, "close1": 1, "close2": 2}
+ENTRY_DAY = {"close": 0, "open": 1, "open_same": 0, "open_same0": 0, "open2": 2, "close1": 1, "close2": 2}
+EXIT_OFF = {"close": 0, "open": 0, "open_same": -1, "open_same0": -1, "open2": 1, "close1": 1, "close2": 2}
 
 
 def didx(F, d: str) -> int:
@@ -79,8 +79,8 @@ def entry_price(F, t, j, entry: str):
         px = F.c[te_c, j].astype(np.float64)
         prevc = F.c[np.maximum(te_c - 1, 0), j].astype(np.float64)
         tr = tr & ~(px >= prevc * 1.295)
-    elif entry == "open_same":
-        px = F.o[te_c, j].astype(np.float64) * (1 + 0.003)
+    elif entry in ("open_same", "open_same0"):               # open_same0: 추가 슬리피지 없는 당일 시가 (평소 보유 비교용)
+        px = F.o[te_c, j].astype(np.float64) * (1 + (0.003 if entry == "open_same" else 0.0))
     else:
         px = F.o[te_c, j].astype(np.float64)
         prevc = F.c[te_c - 1, j].astype(np.float64)
@@ -93,7 +93,9 @@ def exit_price(F, t, j, entry: str, h: int):
     u = t + h + EXIT_OFF[entry]
     okd = u < F.T
     u = np.minimum(u, F.T - 1)
-    px = F.cnext[u, np.asarray(j, np.int64)].astype(np.float64)
+    jj = np.asarray(j, np.int64)
+    px = F.cnext[u, jj].astype(np.float64)
+    px = np.where(np.isfinite(px), px, F.clast[u, jj])    # 다시 거래되지 않으면 (상장폐지) 마지막 거래 종가
     return np.where(okd, px, np.nan)
 
 
@@ -113,12 +115,15 @@ def fwd_path(F, t, j, entry: str, hmax: int):
 
 
 def base_gross(F, t, entry: str, h: int, which=(0, 1)):
-    """같은 창에서 평소 전략 순위 which 종목들의 평균 비용 전 수익률 (날짜 t 의 top_base)."""
+    """같은 창에서 평소 전략 순위 which 종목들의 평균 비용 전 수익률. 순위는 날짜 t 의 top_base
+    (당일 시가 진입 open_same 은 시가에 아는 t−1 순위 — 시뮬레이터가 그 순위로 판다)."""
     t = np.asarray(t, np.int64)
+    rd = t - 1 if entry == "open_same" else t
+    entry = "open_same0" if entry == "open_same" else entry     # 평소 보유는 추가 슬리피지 없이 시가에 판다
     acc = np.zeros(len(t))
     cnt = np.zeros(len(t))
     for w in which:
-        jj = F.top_base[t, w].astype(np.int64)
+        jj = F.top_base[rd, w].astype(np.int64)
         v = jj >= 0
         g = np.full(len(t), np.nan)
         if v.any():
@@ -220,8 +225,8 @@ def ev_stats(F, t, j, net, universe: np.ndarray | None, entry: str, h: int, gros
     out = {"n": int(len(net))}
     if not len(net):
         return out
-    wk = np.array([np.datetime64(f"{F.dates[x][:4]}-{F.dates[x][4:6]}-{F.dates[x][6:]}").astype("datetime64[W]")
-                   for x in np.unique(t)])
+    wk = np.array([(np.datetime64(f"{F.dates[x][:4]}-{F.dates[x][4:6]}-{F.dates[x][6:]}") + np.timedelta64(3, "D"))
+                   .astype("datetime64[W]") for x in np.unique(t)])          # 월요일 시작 주
     out["weeks"] = int(len(np.unique(wk)))
     out["mean"] = float(net.mean())
     out["median"] = float(np.median(net))

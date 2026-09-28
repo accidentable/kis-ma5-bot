@@ -37,8 +37,11 @@ ISJ = os.path.join(OUT, "lab_panic2_is.json")
 VALJ = os.path.join(OUT, "lab_panic2_val.json")
 TESTJ = os.path.join(OUT, "lab_panic2_test.json")
 REPORT = os.path.join(OUT, "lab_panic2.md")
+FREEZE_LOCK = os.path.join(OUT, "lab_panic2_freeze.sha256")    # 동결 파일의 해시 — git 에 커밋해 둔다
 FILES = ["backtest/lab/panic2.py", "backtest/lab/panic2_common.py", "backtest/lab/panic2_feat.py",
-         "backtest/lab/panic_sim2.py", "backtest/lab/panic2_ev_a.py", "backtest/lab/panic2_ev_b.py"]
+         "backtest/lab/panic_sim2.py", "backtest/lab/panic2_ev_a.py", "backtest/lab/panic2_ev_b.py",
+         "backtest/lab/engine.py", "backtest/lab/panic.py", "backtest/lab/search.py"]
+DATA_FILES = ["data/lab/market.npz", "data/lab/market_label.npz", "data/lab/stock_master.csv.gz"]
 SEED = 20260928
 N_RC = 1000          # IS 현실성 검사 (여러 설정 중 최고를 고른 효과) 추첨 수
 N_NOISE = 50         # 종가 결정 잡음 검사 추첨 수
@@ -77,8 +80,9 @@ class Ctx:
         self.R0 = S2.Hybrid("R0", self.base, self.surge)
 
     def _starts(self, a, z, step):
-        s0, s1 = C.didx(self.F, a), min(C.didx(self.F, z), self.T - E.MONTH)
-        return list(range(max(s0, 260), s1, step))
+        """사전 등록 범위: IS 2011-01-03 ~ 2018-12-28 (2일 간격), VAL 2019-01-02 ~ 2024-09-30, TEST 2024-10-01 ~ T−21 (매일)."""
+        s0, s1 = C.didx(self.F, a), min(C.didx(self.F, z) - 1, self.T - E.MONTH)
+        return list(range(s0, s1 + 1, step))
 
     def L(self, name):
         if name not in self._lists:
@@ -185,14 +189,14 @@ def build_configs(X: Ctx) -> list:
                   trig="T0", sel="K2", exit="XMKT_STOP", hold=10, close_dec=True, fam_t="T0", fam_x="LONG"))
     cf.append(Cfg("B24", "B", "T0 · K2 · 1+1 분할 (추가 T0 또는 시장 −6%) · 5일",
                   hyB("B24", T0, "K2", mp_mode="staged", stage2_sig=T0, stage2_drop=0.06), trig="T0", sel="K2",
-                  exit="STAGED_FIX", fam_t="T0", fam_x="STAGED"))
+                  exit="STAGED_FIX", fam_t="T0", fam_x="FIX5"))
     cf.append(Cfg("B25", "B", "F-a · S-RES · 시장 +6% 회복 시 매도",
                   hyB("B25", Fa, "SRES", mp_exit=S2.Exit(hold=10, mkt_tp=0.06)), trig="Fa", sel="SRES", exit="XMKT",
                   hold=10, close_dec=True, fam_t="T0", fam_x="LONG", comps=("B07", "B11", "B22")))
     cf.append(Cfg("B26", "B", "T1 · S-RES · 1+1 분할 · 시장 +6%/−6%",
                   hyB("B26", T1, "SRES", mp_mode="staged", stage2_sig=T1, stage2_drop=0.06,
                       mp_exit=S2.Exit(hold=10, mkt_tp=0.06, mkt_stop=0.06)), trig="T1", sel="SRES", exit="STAGED_XS",
-                  hold=10, close_dec=True, fam_t="T1", fam_x="STAGED", comps=("B01", "B11", "B23", "B24")))
+                  hold=10, close_dec=True, fam_t="T1", fam_x="LONG", comps=("B01", "B11", "B23", "B24")))
     cf.append(Cfg("B27", "B", "T6 반등 확인 · S-RES 목록 · 종가 · 10일",
                   hyB("B27", T6, "T6RES", mp_entry="close", mp_exit=S2.Exit(hold=10)), trig="T6", sel="T6RES",
                   entry="close", hold=10, close_dec=True, fam_t="T6", fam_x="LONG", comps=("B09", "B11", "B21")))
@@ -282,11 +286,14 @@ def b_day_deltas(X, cfg: Cfg, days, H=None, list_override=None):
             until = t0 + 10
             c1 = [int(x) for x in L[t0][:1]]
             d1 = slot_delta(X, t0, c1, "open", H, xk, which=(1,))
+            h1 = mkt_exit_h(X, t0, "open", H, 0.06, 0.06) if xk == "STAGED_XS" else H
+            exit1 = t0 + h1                                # 1번 슬롯 청산일 (종가)
             d2 = 0.0
             for u in range(t0 + 1, min(t0 + 10, X.T - 2) + 1):
                 if s2[u] or F.M[u] <= F.M[t0] * (1 - cfg.hyb.stage2_drop):
                     c2 = [int(x) for x in L[u] if int(x) not in c1][:1]
-                    v = slot_delta(X, u, c2, "open", H, xk, which=(1,))
+                    # 1번 슬롯이 아직 있으면 남은 평소 보유는 순위 높은 쪽 (0), 이미 청산돼 다시 채웠으면 낮은 쪽 (1)
+                    v = slot_delta(X, u, c2, "open", H, xk, which=(0,) if u + 1 <= exit1 else (1,))
                     d2 = v if np.isfinite(v) else 0.0
                     break
             firsts.append(t0)
@@ -336,7 +343,7 @@ def gate_B(X, cfg: Cfg) -> dict:
         reasons.append("IS 사건 평균 Delta ≤ 0")
     if not (g["ep_pos"] >= 0.5):
         reasons.append("IS 사건 중 Delta>0 비율 < 50%")
-    if cfg.exit in ("FIX", "IDX"):
+    if cfg.exit in ("FIX", "IDX", "STAGED_FIX"):
         Hs = (3, 7) if cfg.hold == 5 else (7, 15)
         pl = {}
         for H in Hs:
@@ -376,7 +383,8 @@ def matched_placebo_diff(X, t, j, gross, entry, h, uni):
         q5 = np.floor(np.argsort(np.argsort(cr)) / len(mem) * 5)
         vr = np.argsort(np.argsort(np.where(np.isfinite(vv), vv, np.inf)))
         v3 = np.floor(vr / len(mem) * 3)
-        calm = np.abs(np.nan_to_num(F.z[d, mem], nan=9)) < 1
+        zz = F.gz[d, mem] if entry == "open_same" else F.z[d, mem]          # 당일 시가 진입은 시가에 아는 갭 z
+        calm = np.abs(np.nan_to_num(zz, nan=9)) < 1
         idx = np.where(t == d)[0]
         evj = set(int(x) for x in j[idx])
         pos = {int(x): i for i, x in enumerate(mem)}
@@ -449,9 +457,11 @@ def run_cfg(X: Ctx, cfg: Cfg, starts, r0=None, control=True):
     flag = np.zeros(n, bool)
     mp, sp, trades = [], [], []
     halt = 0
+    alt = np.zeros(n)
     for i, s in enumerate(starts):
         r, info = S2.run_month(m, cfg.hyb, s, 2)
         ret[i] = r
+        alt[i] = info["ret_alt"]
         halt += info["halt_end"]
         f = bool(info["mp_entries"] or info["sp_entries"])
         flag[i] = f
@@ -464,7 +474,7 @@ def run_cfg(X: Ctx, cfg: Cfg, starts, r0=None, control=True):
                                        force_swap=set(info["refill_days"]))[0]
             elif r0 is not None:
                 ctrl[i] = r0[i]
-    return {"ret": ret, "ctrl": ctrl, "flag": flag, "mp": mp, "sp": sp, "trades": trades, "halt_end": halt}
+    return {"ret": ret, "ctrl": ctrl, "flag": flag, "mp": mp, "sp": sp, "trades": trades, "halt_end": halt, "alt": alt}
 
 
 def cvar10(a):
@@ -489,7 +499,8 @@ def cstats(res, r0, starts, F) -> dict:
            "cvar10_entry": cvar10(a[f]) if f.sum() >= 5 else float("nan"),
            "cvar10_entry_r0": cvar10(r0[f]) if f.sum() >= 5 else float("nan"),
            "p10d_entry": float((a[f] <= -0.1).mean()) if f.any() else float("nan"),
-           "halt_end": int(res["halt_end"])}
+           "halt_end": int(res["halt_end"]),
+           "halt_alt_diff": float((res["alt"] - a).mean()) if "alt" in res else float("nan")}
     out["J"] = out["mean"] - 0.2 * out["p10d"]
     c = res["ctrl"]
     if np.isfinite(c).all():
@@ -626,7 +637,7 @@ def noise_check(X, cfg: Cfg, r0_is, base_delta):
                         tt0 = -1
                 # 목록은 원래 T6 목록 (고정 목록 순서는 u* 종가 기준이라 그대로 둔다); 새 확인일엔 K2 기준 재구성
                 base_l = X.L(cfg.sel)
-                K2l = X.L("K2")
+                K2l = t6_fallback(X, cfg)
                 lst = [base_l[t] if len(base_l[t]) else K2l[t] for t in range(X.T)]
                 hy = replace(hy, mp_sig=conf, mp_top=lst, mp_episode=X.ep_ids(conf))
             if cfg.exit in ("XMKT", "XMKT_STOP", "STAGED_XS"):
@@ -645,21 +656,32 @@ def next_open_variant(cfg: Cfg) -> Cfg:
     hy = cfg.hyb
     if cfg.track == "A":
         hy = replace(hy, sp_entry="open" if hy.sp_entry == "close" else hy.sp_entry,
-                     sp_exit=replace(hy.sp_exit, defer_all=True))
+                     sp_exit=replace(hy.sp_exit, defer_rules=True))
     else:
-        hy = replace(hy, mp_entry="open", mp_exit=replace(hy.mp_exit, defer_all=hy.mp_exit.mkt_tp > 0 or hy.mp_exit.mkt_stop > 0))
+        hy = replace(hy, mp_entry="open", mp_exit=replace(hy.mp_exit, defer_rules=True))
     return replace(cfg, id=cfg.id + "o", hyb=hy)
 
 
 # ════════════════════════════════════════════════════════════
 # 위약 (placebo)
 # ════════════════════════════════════════════════════════════
-def placebo_pool(X, t0, t1):
-    """시장 위약일 후보: x > −2%, 어떤 T0 일과도 21 거래일 이상 떨어짐, 범위 [t0, t1)."""
+def t6_fallback(X, cfg):
+    """T6 설정의 고정 목록은 확인일에만 있다. 위약일 · 새 확인일에는 같은 선택 규칙의 그날 목록을 쓴다."""
+    if cfg.sel == "T6K2":
+        return X.L("K2")
+    if cfg.sel == "T6RES":
+        return X.L("SRES")
+    return None
+
+
+def placebo_pool(X, t0, t1, tail=25):
+    """시장 위약일 후보: x > −2%, 어떤 T0 일과도 21 거래일 이상 떨어짐, 범위 [t0, t1 − tail)
+    (위약일의 보유 기간이 기간 밖을 읽지 않게. T0 거리도 t1 전 T0 일만 본다)."""
     F = X.F
     T0 = np.where(X.trig("T0"))[0]
+    T0 = T0[T0 < t1]
     days = []
-    for u in range(max(t0, 260), t1):
+    for u in range(max(t0, 260), t1 - tail):
         if F.x[u] <= -0.02 or X.vol_terc[u] < 0:
             continue
         if len(T0) and np.min(np.abs(T0 - u)) < 21:
@@ -669,44 +691,59 @@ def placebo_pool(X, t0, t1):
 
 
 def rc_B(X, cfgs, real, t0, t1, n_draw=N_RC):
-    """IS 현실성 검사: 각 설정의 IS 사건 첫날마다 (변동성 삼분위 · 200일선) 가 같은 위약일 하나를 뽑아
-    같은 규칙으로 Delta 를 재고, 추첨마다 설정들 중 최고값을 모은다. 반환: 최고값 분포의 90% 분위."""
+    """IS 현실성 검사 (White 방식): 모든 적격 설정의 IS 트리거일을 합쳐 사건(10일)으로 묶고, 추첨마다 합친 사건 하나에
+    (변동성 삼분위 · 200일선) 이 같은 위약일 하나를 뽑아 모든 설정이 같은 위약일을 쓴다. 설정마다 자기 사건들의 위약 Delta
+    평균을 내고, 추첨마다 그중 최고값을 모은다. 반환: 최고값 분포의 90% 분위."""
     pool = placebo_pool(X, t0, t1)
     cls = X.vol_terc[pool] * 2 + X.ab200[pool]
     rng = np.random.default_rng(SEED)
+    union = np.array(sorted(set().union(*[set(trig_days(X, c, t0, t1).tolist()) for c in cfgs])), int)
+    if not len(union):
+        return float("nan"), np.zeros(0)
+    uep = C.episodes_of(union, 10)
+    ucand = []
+    for e in range(uep.max() + 1):
+        f = union[uep == e][0]
+        cand = np.where(cls == X.vol_terc[f] * 2 + X.ab200[f])[0]
+        ucand.append(cand if len(cand) else np.arange(len(pool)))
     per_cfg = []
     for cfg in cfgs:
         days = trig_days(X, cfg, t0, t1)
         dd, _ = b_day_deltas(X, cfg, days)
         ep = C.episodes_of(dd, 10) if len(dd) else np.zeros(0, int)
         firsts = [dd[ep == e][0] for e in range(ep.max() + 1)] if len(dd) else []
-        lo = X.L("K2") if cfg.sel in ("T6K2", "T6RES") else None
+        eps = sorted({int(uep[np.searchsorted(union, f)]) for f in firsts})
+        lo = t6_fallback(X, cfg)
         if cfg.exit.startswith("STAGED"):          # 분할은 사건 단위로 묶이므로 위약일마다 따로 잰다
             dpool = np.array([b_day_deltas(X, cfg, [u], list_override=lo)[1][0] for u in pool])
         else:
             _, dpool = b_day_deltas(X, cfg, pool, list_override=lo)
-        per_cfg.append((firsts, dpool))
+        per_cfg.append((eps, dpool))
     best = np.full(n_draw, -np.inf)
     for i in range(n_draw):
-        for firsts, dpool in per_cfg:
-            vals = []
-            for f in firsts:
-                c = X.vol_terc[f] * 2 + X.ab200[f]
-                cand = np.where((cls == c) & np.isfinite(dpool))[0]
-                if not len(cand):
-                    cand = np.where(np.isfinite(dpool))[0]
-                vals.append(dpool[rng.choice(cand)])
+        pick = [int(rng.choice(c)) for c in ucand]
+        for eps, dpool in per_cfg:
+            vals = [dpool[pick[e]] for e in eps]
+            vals = [v for v in vals if np.isfinite(v)]
             if vals:
                 best[i] = max(best[i], float(np.mean(vals)))
     return float(np.quantile(best, 0.9)), best
 
 
+def placebo_names(X, d, entry):
+    """트랙 A 위약 종목 후보 (그날 하락했지만 평범한 대형주). 당일 시가 진입은 시가에 아는 정보만: 전날 U200 · 갭 ≤ 0 · |갭 z| < 1."""
+    F = X.F
+    if entry == "open_same":
+        return np.where(X.U200p[d] & (np.nan_to_num(F.gap[d], nan=1) <= 0) & (np.abs(np.nan_to_num(F.gz[d], nan=9)) < 1))[0]
+    return np.where(F.U200[d] & (np.nan_to_num(F.ret1[d], nan=1) <= 0) & (np.abs(np.nan_to_num(F.z[d], nan=9)) < 1))[0]
+
+
 def rc_A(X, keys, t0, t1, n_draw=N_RC):
-    """트랙 A 현실성 검사: 같은 사건 날짜에 U200 중 ret1 ≤ 0 & |z| < 1 인 무작위 종목으로 바꿔 평소 보유 대비 Delta 평균,
-    추첨마다 설정 중 최고값. 반환: 90% 분위."""
+    """트랙 A 현실성 검사: 같은 사건 날짜에 위약 종목(그날 하락했지만 평범한 대형주)으로 바꿔 평소 보유 대비 Delta 평균.
+    추첨마다 (날짜, 진입) 하나에 위약 종목 하나를 뽑아 모든 설정이 함께 쓰고, 설정 중 최고값을 모은다. 반환: 90% 분위."""
     F = X.F
     rng = np.random.default_rng(SEED + 1)
-    cache = {}
+    pairs: dict = {}
     per = []
     for sa, entry in keys:
         t, j = a_events(X, sa, t0, t1)
@@ -714,19 +751,21 @@ def rc_A(X, keys, t0, t1, n_draw=N_RC):
         b1 = C.base_gross(F, t, entry, 5, (1,))
         ok = np.isfinite(net) & np.isfinite(b1)
         t, b1 = t[ok], b1[ok]
-        cands = []
+        pk = []
         for d in t:
             key = (int(d), entry)
-            if key not in cache:
-                mem = np.where(F.U200[d] & (np.nan_to_num(F.ret1[d], nan=1) <= 0) & (np.abs(np.nan_to_num(F.z[d], nan=9)) < 1))[0]
+            if key not in pairs:
+                mem = placebo_names(X, d, entry)
                 g = C.fwd(F, np.full(len(mem), d), mem, entry, 5)[1] if len(mem) else np.zeros(0)
-                cache[key] = g[np.isfinite(g)]
-            cands.append(cache[key])
-        per.append((b1, cands))
+                pairs[key] = g[np.isfinite(g)]
+            pk.append(key)
+        per.append((b1, pk))
+    names = list(pairs)
     best = np.full(n_draw, -np.inf)
     for i in range(n_draw):
-        for b1, cands in per:
-            g = np.array([c[rng.integers(len(c))] if len(c) else np.nan for c in cands])
+        ch = {p: (pairs[p][rng.integers(len(pairs[p]))] if len(pairs[p]) else np.nan) for p in names}
+        for b1, pk in per:
+            g = np.array([ch[p] for p in pk])
             v = g - C.COST - b1 - C.COST
             if np.isfinite(v).any():
                 best[i] = max(best[i], float(np.nanmean(v)))
@@ -736,12 +775,25 @@ def rc_A(X, keys, t0, t1, n_draw=N_RC):
 # ════════════════════════════════════════════════════════════
 # 동결
 # ════════════════════════════════════════════════════════════
+def _sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 24), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def sha_files():
+    """코드 · 입력 데이터 · 지표 캐시 전부의 해시."""
     h = {}
-    for f in FILES:
+    for f in FILES + DATA_FILES:
         p = os.path.join(E.ROOT, f)
-        h[f] = hashlib.sha256(open(p, "rb").read()).hexdigest() if os.path.exists(p) else None
-    h["data/lab/panic2/meta.json"] = hashlib.sha256(open(os.path.join(PF.DIR, "meta.json"), "rb").read()).hexdigest()
+        h[f] = _sha(p) if os.path.exists(p) else None
+    feat = hashlib.sha256()
+    for fn in sorted(os.listdir(PF.DIR)):
+        feat.update(fn.encode())
+        feat.update(_sha(os.path.join(PF.DIR, fn)).encode())
+    h["data/lab/panic2/*"] = feat.hexdigest()
     return h
 
 
@@ -753,13 +805,24 @@ def git_head():
 
 
 def check_freeze():
-    if not os.path.exists(FREEZE):
-        sys.exit("동결 파일이 없다: 먼저 `python -m backtest.lab.panic2 is`")
+    """동결 파일이 있고, 그 해시가 git 에 커밋된 잠금 파일과 같고, 코드 · 데이터가 동결 뒤 안 바뀌었는지."""
+    if not os.path.exists(FREEZE) or not os.path.exists(FREEZE_LOCK):
+        sys.exit("동결 파일(또는 잠금 파일)이 없다: 먼저 `python -m backtest.lab.panic2 is` 후 두 파일을 커밋")
+    lock = open(FREEZE_LOCK, encoding="utf-8").read().split()[0]
+    if _sha(FREEZE) != lock:
+        sys.exit("동결 파일이 잠금 해시와 다르다 — 거부")
+    rel = os.path.relpath(FREEZE_LOCK, E.ROOT)
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=E.ROOT, capture_output=True).returncode == 0
+    clean = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel, os.path.relpath(FREEZE, E.ROOT)],
+                           cwd=E.ROOT).returncode == 0
+    if not (tracked and clean):
+        sys.exit("잠금 파일 · 동결 파일이 git 에 커밋돼 있지 않다 — 먼저 커밋")
     fz = json.load(open(FREEZE, encoding="utf-8"))
     now = sha_files()
     diff = [k for k in now if fz["sha256"].get(k) != now[k]]
     if diff:
         sys.exit(f"동결 이후 바뀐 파일: {diff} — VAL/TEST 는 거부 (새 사전 등록이 필요)")
+    fz["_lock"] = lock
     return fz
 
 
@@ -787,8 +850,21 @@ def jdump(obj, path):
 # ════════════════════════════════════════════════════════════
 # P0 · P1 · P2 (IS)
 # ════════════════════════════════════════════════════════════
-def phase_is(dry=False):
+def phase_is(dry=False, new_registration=False):
     t_start = time.time()
+    if not dry:
+        if os.path.exists(FREEZE) and not new_registration:
+            sys.exit("이미 동결됐다. 다시 동결하려면 --new-registration (옛 동결은 보관되고 TEST 는 '이미 봄' 으로 표시된다)")
+        if os.path.exists(FREEZE):
+            tag = time.strftime("%Y%m%d%H%M%S")
+            for pth in (FREEZE, FREEZE_LOCK, ISJ, VALJ, TESTJ):
+                if os.path.exists(pth):
+                    os.rename(pth, pth + f".spent-{tag}")
+        dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--"] + FILES, cwd=E.ROOT).returncode != 0
+        untracked = subprocess.run(["git", "ls-files", "--error-unmatch"] + FILES, cwd=E.ROOT,
+                                   capture_output=True).returncode != 0
+        if dirty or untracked:
+            sys.exit("동결 전에 코드를 전부 커밋해야 한다 (동결 파일이 git 해시를 기록한다)")
     X = Ctx()
     F = X.F
     cfgs = build_configs(X)
@@ -823,15 +899,31 @@ def phase_is(dry=False):
         if c.hyb.sp_top is not None:
             sigs |= np.array([len(x) > 0 for x in c.hyb.sp_top])
         n_bad = 0
-        for i, s in enumerate(st[::7]):
+        for i, s in enumerate(st):
             e = min(s + E.MONTH - 1, X.T - 1)
             if sigs[s - 1:e].any() or (c.hyb.sp_entry == "open_same" and sigs[s:e + 1].any()):
                 continue
             m = X.m_idx if c.use_idx else X.m
-            if abs(S2.run_month(m, c.hyb, s, 2)[0] - r0[st.index(s)]) > 1e-12:
+            if abs(S2.run_month(m, c.hyb, s, 2)[0] - r0[i]) > 1e-12:
                 n_bad += 1
         bad[c.id] = n_bad
     out["zero_delta_violations"] = bad
+    # R1 재현 (검토 의견 6): 하한가 미루기 · 정지일 체결 금지를 끈 시뮬레이터가 panic.py 와 창마다 같아야 한다.
+    # 알려진 차이: 후보가 있는데 하나도 못 사면 panic.py 는 H 일 현금, 여기선 평소 전략으로 돌아간다 (IS 에 해당 창 없음 확인).
+    from backtest.lab import panic as P1
+    k2old = E.Spec("K2", np.where(F.ok & (F.caprank <= 200), -F.ret1, np.nan), "signal").prepare().top
+    pday = F.x <= -0.04
+
+    class _B:
+        top = X.base
+    leg = S2.Hybrid("R1L", X.base, X.surge, mp_sig=pday, mp_rank_day=X.ident, mp_top=k2old,
+                    mp_exit=S2.Exit(hold=5), legacy=True)
+    rep_err = max(abs(P1.run_hybrid(X.m, _B, k2old, pday, 5, s, 2, X.surge)[0] - S2.run_month(X.m, leg, s, 2)[0])
+                  for s in st)
+    out["r1_replication_max_abs_diff"] = float(rep_err)
+    print("P0 R1 재현 최대 차이", rep_err, flush=True)
+    if rep_err > 1e-6:
+        bad["R1_replication"] = 1
     if any(bad.values()):
         print("P0 실패: 신호 없는 창에서 Delta ≠ 0", {k: v for k, v in bad.items() if v})
         if not dry:
@@ -932,7 +1024,7 @@ def phase_is(dry=False):
                 elig[cid].append(f"현실성 검사: {C.pct(real[cid], 2)} ≤ 위약 최고값 90% {C.pct(q90, 2)}")
         print("rc", trk, out[f"rc_{trk}"], flush=True)
     out["eligibility"] = elig
-    # 결선 (트랙마다 J_IS 상위 3; B 는 트리거 계열 · 청산 계열마다 하나)
+    # 결선 (트랙마다 J_IS 상위 3; B 는 트리거 계열 · 청산 계열마다 하나 — 검토 의견 7c 는 트랙 B 에만)
     fin = {}
     for trk in ("B", "A"):
         cand = sorted([cid for cid, r in elig.items() if not r and byid[cid].track == trk],
@@ -941,8 +1033,6 @@ def phase_is(dry=False):
         for cid in cand:
             c = byid[cid]
             if trk == "B" and (c.fam_t in ft or c.fam_x in fx):
-                continue
-            if trk == "A" and c.fam_t in ft:
                 continue
             pick.append(cid)
             ft.add(c.fam_t)
@@ -969,7 +1059,12 @@ def phase_is(dry=False):
               "gates_B": {k: {kk: vv for kk, vv in v.items() if kk in ("pass", "reasons", "N_ep_IS", "N_ep_VAL", "ep_mean",
                                                                        "ep_pos", "plateau", "jaccard_T0")}
                           for k, v in out["gates_B"].items()}}
+    freeze["registration"] = {"new_registration": bool(new_registration),
+                              "test_seen_before": True,
+                              "note": "트랙 B 의 TEST(2024.10~) 는 lab_panic 에서 이미 봤다 — 거부권으로만 쓴다"}
     jdump(freeze, FREEZE)
+    with open(FREEZE_LOCK, "w", encoding="utf-8") as fh:
+        fh.write(_sha(FREEZE) + "  lab_panic2_freeze.json\n")
     print("동결:", FREEZE, "결선:", fin, "AB:", ab, f"{time.time() - t_start:.0f}s")
     return out, X, cfgs, res
 
@@ -1007,19 +1102,21 @@ def val_criteria_B(X, cfg, res, r0, starts, is_res, is_r0, is_starts) -> dict:
     out["loo_min"] = min(loo) if loo else float("nan")
     out["loo_min_ctrl"] = min(looc) if looc else float("nan")
     # (iv) IS+VAL 합쳐 사건별 Delta
-    allp = [(is_res, is_r0), (res, r0)]
-    ep_d = {}
-    for rr, rz in allp:
-        dd = rr["ret"] - rz
-        for i, L in enumerate(rr["mp"]):
-            es = [int(epi[x]) for x in L if epi[x] >= 0]
-            if es:
-                ep_d.setdefault(es[0], []).append(dd[i])
-    em = np.array([np.mean(v) for v in ep_d.values()]) if ep_d else np.zeros(0)
-    out["pooled_ep_n"] = int(len(em))
-    out["pooled_ep_pos"] = float((em > 0).mean()) if len(em) else float("nan")
-    out["pooled_no_top2"] = float(np.sort(em)[:-2].mean()) if len(em) > 2 else float("nan")
-    out["pooled_ep_means"] = em.tolist()
+    for tag, key in (("", None), ("_ctrl", "ctrl")):
+        ep_d = {}
+        for rr, rz in ((is_res, is_r0), (res, r0)):
+            dd = rr["ret"] - (rr["ctrl"] if key else rz)
+            for i, L in enumerate(rr["mp"]):
+                es = [int(epi[x]) for x in L if epi[x] >= 0]
+                if es:
+                    ep_d.setdefault(es[0], []).append(dd[i])
+        em_ = np.array([np.mean(v) for v in ep_d.values()]) if ep_d else np.zeros(0)
+        out[f"pooled_ep_n{tag}"] = int(len(em_))
+        out[f"pooled_ep_pos{tag}"] = float((em_ > 0).mean()) if len(em_) else float("nan")
+        out[f"pooled_no_top2{tag}"] = float(np.sort(em_)[:-2].mean()) if len(em_) > 2 else float("nan")
+        out[f"pooled_ep_means{tag}"] = em_.tolist()
+        if not key:
+            em = em_
     lo, hi = C.boot_ci(em, 5000, (0.05, 0.95), SEED) if len(em) > 1 else (float("nan"), float("nan"))
     out["pooled_ep_ci90"] = [lo, hi]
     # (iii) 대체 청산 간격 G=5 · 21 (진단)
@@ -1044,10 +1141,20 @@ def val_criteria_A(X, cfg, res, r0, starts, is_res, is_r0, is_starts) -> dict:
     yrs = np.array([F.dates[s][:4] for s in starts])
     out["loyo_min"] = min(float(d[yrs != y].mean()) for y in sorted(set(yrs)))
     out["loyo_min_ctrl"] = min(float(dc[yrs != y].mean()) for y in sorted(set(yrs)))
-    tr = [(t0, r) for L in res["trades"] for (k, t0, t1, r) in L if k == "sp"]
-    top5 = set(t for t, _ in sorted(tr, key=lambda x: -x[1])[:5])
+    uniq = {(t0, t1, round(r, 10)) for L in res["trades"] for (k, t0, t1, r) in L if k == "sp"}   # 겹치는 창의 같은 거래는 하나로
+    pnl = {}
+    for t0, t1, r in uniq:
+        pnl[t0] = pnl.get(t0, 0.0) + r
+    top5 = set(sorted(pnl, key=lambda x: -pnl[x])[:5])
     keep = np.array([not any(t0 in top5 for (k, t0, t1, r) in L if k == "sp") for L in res["trades"]])
     out["drop_top5_delta"] = float(d[keep].mean()) if keep.any() else float("nan")
+    out["drop_top5_delta_ctrl"] = float(dc[keep].mean()) if keep.any() else float("nan")
+    # 채택 표시용: IS+VAL 분기별 Delta 평균의 블록 부트스트랩 90% 신뢰구간
+    allst = list(is_starts) + list(starts)
+    dall = np.concatenate([is_res["ret"] - is_r0, d])
+    qa = np.array([F.dates[s_][:4] + "Q" + str((int(F.dates[s_][4:6]) - 1) // 3 + 1) for s_ in allst])
+    qmeans = np.array([dall[qa == x].mean() for x in sorted(set(qa))])
+    out["pooled_ep_ci90"] = list(C.boot_ci(qmeans, 5000, (0.05, 0.95), SEED))
     q = np.array([F.dates[s][:4] + "Q" + str((int(F.dates[s][4:6]) - 1) // 3 + 1) for s in starts])
     qm = [d[q == x].mean() for x in sorted(set(q))]
     out["quarters_pos"] = float(np.mean(np.array(qm) > 0))
@@ -1066,7 +1173,7 @@ def placebo_B_contest(X, cfg, r0_pool, starts_pool, n_draw=N_PLACEBO):
     rng = np.random.default_rng(SEED + 7)
     st = np.array(starts_pool)
     out = np.zeros(n_draw)
-    lo = X.L("K2") if cfg.sel in ("T6K2", "T6RES") else X.L(cfg.sel) if cfg.sel not in ("IDX",) else None
+    lo = t6_fallback(X, cfg) or (X.L(cfg.sel) if cfg.sel not in ("IDX",) else None)
     for i in range(n_draw):
         pdays = []
         for t in real_days:
@@ -1094,7 +1201,7 @@ def placebo_B_contest(X, cfg, r0_pool, starts_pool, n_draw=N_PLACEBO):
         dsum = 0.0
         for k_, s in enumerate(st):
             e = min(s + E.MONTH - 1, X.T - 1)
-            if sig[s - 1:e].any():
+            if cfg.track == "AB" or sig[s - 1:e].any():       # 조합은 종목 패닉 다리가 모든 창에서 움직인다
                 dsum += S2.run_month(m, hy, int(s), 2)[0] - r0_pool[k_]
         out[i] = dsum / len(st)
     return out
@@ -1109,8 +1216,7 @@ def placebo_A_contest(X, cfg, r0_pool, starts_pool, n_draw=N_PLACEBO):
     days = [t for t in range(a, b) if len(L[t])]
     cands = {}
     for d in days:
-        dd = d if cfg.entry == "open_same" else d
-        cands[d] = np.where(F.U200[dd] & (np.nan_to_num(F.ret1[dd], nan=1) <= 0) & (np.abs(np.nan_to_num(F.z[dd], nan=9)) < 1))[0]
+        cands[d] = placebo_names(X, d, cfg.entry)
     rng = np.random.default_rng(SEED + 11)
     out = np.zeros(n_draw)
     for i in range(n_draw):
@@ -1135,7 +1241,7 @@ def phase_val():
     if fz["AB"]:
         byid["AB"] = make_ab(X, byid, fz["AB"])
         cfgs.append(byid["AB"])
-    out = {"phase": "VAL", "configs": {}, "criteria": {}}
+    out = {"phase": "VAL", "configs": {}, "criteria": {}, "freeze_lock": fz["_lock"]}
     st = X.starts["VAL"]
     sti = X.starts["IS"]
     r0vres = run_cfg(X, byid["R0"], st, control=False)
@@ -1167,12 +1273,14 @@ def phase_val():
             vb = val_criteria_B(X, c, resv[cid], r0v, st, resi[cid], r0i, sti)
             crit.update(vb)
             crit["iii"] = vb["loo_min"] > 0 and vb["loo_min_ctrl"] > 0
-            crit["iv"] = vb["pooled_no_top2"] > 0 and vb["pooled_ep_pos"] >= 0.5
+            crit["iv"] = (vb["pooled_no_top2"] > 0 and vb["pooled_ep_pos"] >= 0.5
+                          and vb["pooled_no_top2_ctrl"] > 0 and vb["pooled_ep_pos_ctrl"] >= 0.5)
             pb = placebo_B_contest(X, c, r0p, pool_st)
         else:
             va = val_criteria_A(X, c, resv[cid], r0v, st, resi[cid], r0i, sti)
             crit.update(va)
-            crit["iii"] = va["loyo_min"] > 0 and va["loyo_min_ctrl"] > 0 and va["drop_top5_delta"] > 0
+            crit["iii"] = (va["loyo_min"] > 0 and va["loyo_min_ctrl"] > 0 and va["drop_top5_delta"] > 0
+                           and va["drop_top5_delta_ctrl"] > 0)
             crit["iv"] = va["quarters_pos"] >= 0.55
             pb = placebo_A_contest(X, c, r0p, pool_st)
         crit["placebo_q90"] = float(np.quantile(pb, 0.9))
@@ -1211,10 +1319,24 @@ def phase_val():
     print("VAL 끝:", adopt, f"{time.time() - t_start:.0f}s")
 
 
+def b_exit_day(X, cfg: Cfg, t):
+    """사건 단위 청산일 (훈련 창이 검증 사건을 넘보지 않게)."""
+    if cfg.exit.startswith("STAGED"):
+        return t + 10 + cfg.hold + 1
+    if cfg.exit in ("XMKT", "XMKT_STOP"):
+        h = mkt_exit_h(X, t, cfg.entry, cfg.hold, 0.06, 0.06 if cfg.exit == "XMKT_STOP" else 0.0)
+        return t + h + C.EXIT_OFF[cfg.entry]
+    return t + cfg.hold + C.EXIT_OFF.get(cfg.entry, 0)
+
+
 def nested_loeo(X, cfgs, t_end):
-    """중첩 시간순 사건 하나 빼기: 각 사건 e 에서 그 전 사건들(5개 이상) 로 최고 설정을 골라 e 에서의 Delta 를 기록."""
+    """중첩 시간순 사건 하나 빼기 (검토 의견 5): 사건 e 마다, e 첫날 전에 청산이 끝난 사건들만으로
+    관문(사건 평균 > 0 · 양수 비율 ≥ 50% · 사건 6개↑ · 고원 · T0 겹침 < 0.6 · 조합은 구성 요소 통과)을 다시 판정하고,
+    통과한 설정 중 이전 사건 평균 Delta 가 가장 큰 것을 골라 e 에서의 Delta 를 기록한다. 통과 설정이 없으면 0 (평소 전략).
+    폴드 안 선택은 대회 J 대신 사건 단위 대용치(관문 + 사건 평균 Delta 최대)를 쓴다 — 이 방식 자체를 여기서 사전 등록한다."""
     F = X.F
     a = C.didx(F, C.PERIODS["IS"][0])
+    byid = {c.id: c for c in cfgs}
     union = np.zeros(X.T, bool)
     per = {}
     for c in cfgs:
@@ -1222,23 +1344,71 @@ def nested_loeo(X, cfgs, t_end):
         d = d[(d >= a) & (d < t_end)]
         union[d] = True
         dd, dl = b_day_deltas(X, c, d)
-        per[c.id] = dict(zip(dd.tolist(), dl.tolist()))
+        ex = np.array([b_exit_day(X, c, t) for t in dd], int)
+        alt = {}
+        if c.exit in ("FIX", "IDX", "STAGED_FIX"):
+            for H in ((3, 7) if c.hold == 5 else (7, 15)):
+                d2, l2 = b_day_deltas(X, c, d, H=H)
+                alt[H] = dict(zip(d2.tolist(), l2.tolist()))
+        per[c.id] = {"d": dd, "v": dl, "exit": ex, "alt": alt}
     days = np.where(union)[0]
     ep = C.episodes_of(days, 10)
     E_ = ep.max() + 1 if len(days) else 0
-    D = np.zeros((len(cfgs), E_))
-    for k, c in enumerate(cfgs):
-        for e in range(E_):
-            v = [per[c.id][t] for t in days[ep == e] if t in per[c.id] and np.isfinite(per[c.id][t])]
-            D[k, e] = np.mean(v) if v else 0.0
+    first = np.array([days[ep == e][0] for e in range(E_)])
+    T0 = X.trig("T0")
+
+    def ep_mean_of(c, e, cutoff=None):
+        p = per[c.id]
+        sel = (p["d"] >= first[e]) & ((p["d"] < first[e + 1]) if e + 1 < E_ else True)
+        if cutoff is not None:
+            sel &= p["exit"] < cutoff
+        v = p["v"][sel]
+        v = v[np.isfinite(v)]
+        return float(v.mean()) if len(v) else None
+
+    def gate_local(c, cutoff):
+        p = per[c.id]
+        sel = (p["exit"] < cutoff) & np.isfinite(p["v"])
+        dd, vv = p["d"][sel], p["v"][sel]
+        if not len(dd):
+            return False
+        et = C.ep_table(dd, vv, 10)
+        if et["N"] < 6 or not (et["mean"] > 0) or not (et["pos"] >= 0.5):
+            return False
+        for H, mp_ in p["alt"].items():
+            va = np.array([mp_.get(int(t), np.nan) for t in dd])
+            ea = C.ep_table(dd, va, 10)
+            if not (ea.get("N", 0) and ea["mean"] > 0 and ea["mean"] >= 0.5 * et["mean"]):
+                return False
+        if c.trig in ("T1", "T2", "T3", "T4", "T5", "T7"):
+            A_, B_ = X.trig(c.trig)[a:cutoff], T0[a:cutoff]
+            u = (A_ | B_).sum()
+            if u and (A_ & B_).sum() / u >= 0.6:
+                return False
+        return True
+
     ooe, ins, picks, when = [], [], [], []
     for e in range(5, E_):
-        tr = D[:, :e].mean(1)
-        k = int(np.argmax(tr))
-        ooe.append(D[k, e])
-        ins.append(tr[k])
-        picks.append(cfgs[k].id)
-        when.append(F.dates[days[ep == e][0]])
+        cut = first[e]
+        ok = {c.id: gate_local(c, cut) for c in cfgs}
+        best, best_v = None, -np.inf
+        for c in cfgs:
+            if not ok[c.id] or any(not ok.get(x, False) for x in c.comps):
+                continue
+            tr = [ep_mean_of(c, e2, cut) for e2 in range(e)]
+            v = float(np.mean([x if x is not None else 0.0 for x in tr]))
+            if v > best_v:
+                best, best_v = c, v
+        if best is None:
+            ooe.append(0.0)
+            ins.append(0.0)
+            picks.append("없음")
+        else:
+            got = ep_mean_of(best, e)
+            ooe.append(got if got is not None else 0.0)
+            ins.append(best_v)
+            picks.append(best.id)
+        when.append(F.dates[cut])
     ooe = np.array(ooe)
     from collections import Counter
     cc = Counter(picks)
@@ -1272,7 +1442,11 @@ def phase_test():
     fz = check_freeze()
     if not os.path.exists(VALJ):
         sys.exit("VAL 결과가 없다: 먼저 `python -m backtest.lab.panic2 val`")
+    if os.path.exists(TESTJ):
+        sys.exit("TEST 는 이미 한 번 돌렸다 — 다시 돌리지 않는다 (보고서만: `python -m backtest.lab.panic2 report`)")
     vj = json.load(open(VALJ, encoding="utf-8"))
+    if vj.get("freeze_lock") != fz["_lock"]:
+        sys.exit("VAL 결과가 지금 동결 파일로 만든 게 아니다 — 거부")
     t_start = time.time()
     X = Ctx()
     F = X.F
@@ -1306,9 +1480,8 @@ def phase_test():
                      "mean": s_["mean"], "p10d": s_["p10d"]}
     out["veto"] = veto
     # 중첩 LOEO (트랙 B: IS 관문 통과한 설정 전부, 2011 ~ 2026.9)
-    isj = json.load(open(ISJ, encoding="utf-8"))
-    gB = [byid[c] for c, g in isj["gates_B"].items() if g["pass"] and c in byid and byid[c].track == "B"]
-    out["nested_loeo"] = nested_loeo(X, gB, X.T) if gB else {"n_folds": 0}
+    gB = [c for c in cfgs if c.track == "B"]           # 폴드마다 관문을 다시 판정하므로 전부 넘긴다
+    out["nested_loeo"] = nested_loeo(X, gB, X.T)
     adopt = {}
     for trk in ("B", "A", "AB"):
         cid = vj["adopt_after_VAL"].get(trk)
@@ -1447,7 +1620,7 @@ def write_report():
 def main() -> int:
     ph = sys.argv[1] if len(sys.argv) > 1 else "is"
     if ph == "is":
-        phase_is()
+        phase_is(new_registration="--new-registration" in sys.argv)
     elif ph == "val":
         phase_val()
     elif ph == "test":
