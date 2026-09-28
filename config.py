@@ -117,6 +117,23 @@ NH_BUY_CUTOFF: str = os.getenv("NH_BUY_CUTOFF", "1430").strip()  # 이 시각 �
 # 손절 (%). 0 이면 없음 — 백테스트는 손절 없이 검증했다. 켜면 검증 밖의 규칙이 된다.
 NH_STOP_LOSS_PCT: float = _env_float("NH_STOP_LOSS_PCT", 0.0)
 
+# ── 패닉 모드 (near_high 위에 얹는 선택 기능, 기본 꺼짐) ───────────
+# 장 마감 뒤 시장 평균 등락률이 −PANIC_MKT_DROP_PCT% 이하면, 다음 날 평소 보유를 모두 팔고 최근 5일 가장 많이 빠진
+# 과매도주 PANIC_SLOTS 개를 같은 금액씩 사서 PANIC_HOLD_DAYS 거래일째 15:15 에 판다. 규칙은 core/panic.py.
+# 백테스트 (1억, 5종목): 봇 대비 한 달 평균 2011~2019 +1.4%p, 2020~ +1.7%p (여러 설정을 본 뒤 고른 값 — 실제는 더 낮을 수 있다)
+PANIC_ENABLED: bool = _env_bool("PANIC_ENABLED", False)
+PANIC_MKT_DROP_PCT: float = _env_float("PANIC_MKT_DROP_PCT", 4.0)        # 급락일 기준 (시장 평균 등락률 %)
+PANIC_SLOTS: int = _env_int("PANIC_SLOTS", 5)                           # 패닉 때 살 종목 수 (계좌를 N 등분)
+PANIC_HOLD_DAYS: int = _env_int("PANIC_HOLD_DAYS", 5)                   # 보유 거래일 (산 날 = 1일째)
+PANIC_UNIVERSE_TOP: int = _env_int("PANIC_UNIVERSE_TOP", 1500)          # 시장 평균 계산 범위 (시총 상위 N)
+PANIC_MKT_MIN_VALUE: float = _env_float("PANIC_MKT_MIN_VALUE", 3_000_000_000)   # 시장 평균에 넣을 20일 거래대금 하한
+PANIC_PICK_TOP: int = _env_int("PANIC_PICK_TOP", 1000)                  # 후보 시총 순위 상한
+PANIC_PICK_MIN_VALUE: float = _env_float("PANIC_PICK_MIN_VALUE", 2_000_000_000)  # 후보 20일 거래대금 하한
+PANIC_IBS_MAX: float = _env_float("PANIC_IBS_MAX", 0.7)                 # 고가 근처 마감 종목 제외 (종가 위치)
+PANIC_VR_MAX: float = _env_float("PANIC_VR_MAX", 3.0)                   # 오늘 거래대금이 20일 평균의 N 배 이상이면 제외
+PANIC_CANDIDATES: int = _env_int("PANIC_CANDIDATES", 15)                # 저장할 후보 수 (못 사면 다음 순위)
+PANIC_SCAN_TIME: str = os.getenv("PANIC_SCAN_TIME", "1535").strip()     # 급락 판정 (시총 1500 × 일봉, 모의투자 약 10분)
+
 # ── 종가 베팅 (STRATEGY=closebet, 선택형 — 기본 아님) ───────────
 # 당일 강세 마감 테마주(거래대금 상위)를 장마감 동시호가에 사서 다음 날 장전 동시호가에 판다.
 # 16년 백테스트에서 기대값 0 근처 (IS +0.4%, VAL −0.8%, TEST +0.3% / 한 달). 검증을 통과하지 못했다.
@@ -313,6 +330,10 @@ def validate() -> list[str]:
         problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/closebet/ma5)")
     if NH_SLOTS < 1 or NH_HOLD_DAYS < 1:
         problems.append("NH_SLOTS, NH_HOLD_DAYS 는 1 이상")
+    if PANIC_ENABLED and STRATEGY != "near_high":
+        problems.append("PANIC_ENABLED 는 STRATEGY=near_high 에서만 동작한다")
+    if PANIC_SLOTS < 1 or PANIC_HOLD_DAYS < 1:
+        problems.append("PANIC_SLOTS, PANIC_HOLD_DAYS 는 1 이상")
 
     return problems
 
@@ -343,6 +364,9 @@ def summary() -> str:
             + (f" | 하루 +{NH_SURGE_EXIT_PCT:g}%↑ 급등 시 마감 때 매도" if NH_SURGE_EXIT_PCT > 0 else "") + "\n"
             f"일정: {NH_PREP_TIME[:2]}:{NH_PREP_TIME[2:]} 순위 계산 → {NH_ENTRY_TIME[:2]}:{NH_ENTRY_TIME[2:]} 교체 매매 "
             f"(빈 슬롯은 {NH_BUY_CUTOFF[:2]}:{NH_BUY_CUTOFF[2:]}까지 10분마다 재시도)"
+            + (f"\n패닉 모드: 켜짐 — {PANIC_SCAN_TIME[:2]}:{PANIC_SCAN_TIME[2:]} 시장 평균 −{PANIC_MKT_DROP_PCT:g}%↓ 판정 → "
+               f"다음 날 5일 최대 낙폭주 {PANIC_SLOTS}종목 (시총 {PANIC_PICK_TOP}위 안, 거래대금 "
+               f"{PANIC_PICK_MIN_VALUE / 1e8:,.0f}억↑), {PANIC_HOLD_DAYS}거래일 보유" if PANIC_ENABLED else "\n패닉 모드: 꺼짐")
         )
     stop = f"{STOP_LOSS_PCT}%" if USE_STOP_LOSS else "없음"
     if INTRADAY_REENTRY:

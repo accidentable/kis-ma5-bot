@@ -96,6 +96,12 @@ def close_handler(event, context):
     return _guard("마감", close.run, event)
 
 
+def panic_scan_handler(event, context):
+    """시장 급락 판정 (PANIC_SCAN_TIME, 장 마감 뒤). PANIC_ENABLED=false 면 아무것도 안 한다."""
+    from jobs import panic
+    return _guard("급락 판정", panic.scan, event)
+
+
 def webhook_handler(event, context):
     """
     텔레그램 웹훅. API Gateway(HTTP API) payload v2.0 기준.

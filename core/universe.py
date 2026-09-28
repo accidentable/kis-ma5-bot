@@ -312,7 +312,7 @@ def get_large_universe(top_n: int, force: bool = False) -> list[dict]:
     """시총 상위 top_n (코스피+코스닥). 하루 단위 캐시, 실패하면 지난 캐시로 대체."""
     today = date.today().isoformat()
     os.makedirs(config.DATA_DIR, exist_ok=True)
-    path = os.path.join(config.DATA_DIR, "universe_large.json")
+    path = os.path.join(config.DATA_DIR, "universe_large.json" if top_n == 200 else f"universe_large_{top_n}.json")
     if not force:
         try:
             with open(path, encoding="utf-8") as f:

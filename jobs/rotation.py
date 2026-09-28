@@ -24,6 +24,7 @@ from datetime import date, datetime
 import config
 from core import nearhigh, notify, state, trader, universe
 from core.kis import quotes, trading
+from jobs import panic
 from core.kis.tick import offset_ticks
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,11 @@ def prep(force: bool = False) -> dict:
     if not force and not quotes.is_open_day(date.today()):
         return {"skipped": "휴장일"}
     rot = bump_day()
+    panic.bump()
     trader.sync_fills()
+    if panic.blocks_base():
+        notify.send(f"🌅 개장 전 준비 {_today()}\n{panic.status_line()}")
+        return {"due": False, "panic": panic.get().get("status")}
     due = is_rebalance_due(rot)
     need_rank = due or (config.NH_REFILL and len(state.get_positions()) < config.NH_SLOTS)
     msg = [f"🌅 개장 전 준비 {_today()}"]
@@ -339,7 +344,10 @@ def entry(force: bool = False) -> dict:
         return {"skipped": "잠금"}
     try:
         bump_day()
+        panic.bump()
         trader.sync_fills()
+        if panic.blocks_base():
+            return {"panic": panic.enter()}
         if is_rebalance_due():
             return rebalance()
         if config.NH_REFILL and len(state.get_positions()) < config.NH_SLOTS:
@@ -363,6 +371,9 @@ def monitor(force: bool = False) -> dict:
         return {**out, "skipped": "잠금"}
     try:
         bump_day()
+        if panic.blocks_base():
+            out["panic"] = panic.enter()          # 09:05 가 안 돌았으면 여기서 진입, 들어갔으면 빈 패닉 슬롯 재시도
+            return out
         if is_rebalance_due():
             # 09:05 작업이 안 돌았으면(재시작 등) 여기서 교체한다
             out["rebalance"] = rebalance()
@@ -410,8 +421,8 @@ def _surge_exits() -> list[dict]:
         return []
     out = []
     for pos in state.get_positions():
-        if pos.get("entry_date") == _today():
-            continue            # 오늘 산 건 오늘 안 판다
+        if pos.get("entry_date") == _today() or pos.get("strategy") == "panic":
+            continue            # 오늘 산 건 오늘 안 판다. 패닉 종목은 보유 일수로만 판다
         try:
             q = quotes.get_price(pos["ticker"])
         except Exception as e:
@@ -429,6 +440,7 @@ def close(force: bool = False, send_report: bool = True) -> dict:
         return {"skipped": "휴장일"}
     cancelled = trader.cancel_all_pending()
     trader.sync_fills()
+    panic.maybe_exit()
     _surge_exits()
     today_closed = [h for h in state.get_history(limit=20) if h.get("exit_date") == _today()]
     if send_report:
@@ -456,6 +468,8 @@ def status_text() -> str:
         entry_px = float(p.get("entry_price", 0) or 0)
         pnl = (price / entry_px - 1) * 100 if (entry_px and price) else 0
         lines.append(f"📌 {p.get('name', '')}({p['ticker']}) {int(p.get('qty', 0)):,}주 | {entry_px:,.0f} → {price:,.0f} {pnl:+.2f}%")
+    if panic.status_line():
+        lines.append("\n" + panic.status_line())
     if state.is_paused():
         lines.append("\n⏸ 자동매매 일시정지 중")
     return "\n".join(lines)

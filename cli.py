@@ -317,6 +317,15 @@ def cmd_close(args) -> int:
     return 0
 
 
+def cmd_panic(args) -> int:
+    """급락 판정 1회 (PANIC_ENABLED 가 꺼져 있어도 돌려 볼 수 있다. 급락일이면 다음 개장에 진입 대기로 저장된다)."""
+    from jobs import panic
+    r = panic.scan(force=True)
+    print({k: v for k, v in r.items() if k != "candidates"})
+    print(panic.status_line() or panic.get())
+    return 0
+
+
 def cmd_status(args) -> int:
     from core import commands
     import config
@@ -373,6 +382,11 @@ def cmd_serve(args) -> int:
                       id="monitor", replace_existing=True)
         sched.add_job(_wrap("마감", rotation.close), CronTrigger(day_of_week="mon-fri", hour=15, minute=15),
                       id="close", replace_existing=True)
+        if config.PANIC_ENABLED:
+            from jobs import panic
+            h, mi = _hm(config.PANIC_SCAN_TIME)
+            sched.add_job(_wrap("급락 판정", panic.scan), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id="panic_scan", replace_existing=True)
     else:
         _schedule_ma5(sched, _wrap, _hm)
 
@@ -435,6 +449,7 @@ def main() -> int:
         ("entry", cmd_entry, "진입 작업 1회"),
         ("monitor", cmd_monitor, "장중 감시 1회"),
         ("close", cmd_close, "마감 정리 1회"),
+        ("panic", cmd_panic, "시장 급락 판정 1회 (패닉 모드)"),
         ("status", cmd_status, "보유 현황"),
         ("serve", cmd_serve, "스케줄러 상주 실행"),
     ]:
