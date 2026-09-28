@@ -62,6 +62,7 @@ class Hybrid:
     sp_extra_slip: float = 0.0
     sp_max: int = 1                           # 동시에 들 수 있는 종목 패닉 포지션 수 (A18 단독 모드 = 2)
     idx_col: int = -1                         # 합성 지수 열 (세금 없음, 가용 현금 전부로 한 종목)
+    base_rot: int = 21                        # 평소 전략 교체 주기 (거래일)
     legacy: bool = False                      # panic.py 재현용: 정지일 체결 허용 · 하한가 매도 미루기 없음
 
 
@@ -301,7 +302,7 @@ def run_month(m, cfg: Hybrid, s: int, k: int = 2, capital: float = E.CAPITAL, fo
                 keep = set(int(x) for x in cfg.base_top[sig][:k])
                 for j in [x for x in pos if pos[x]["kind"] == "base" and x not in keep]:
                     try_sell_open(j, t)
-                next_rebal = t + 21
+                next_rebal = t + cfg.base_rot
                 if post_mp:
                     info["rebal_days"].append(t)
                     post_mp = False
