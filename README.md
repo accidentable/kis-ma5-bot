@@ -347,10 +347,11 @@ sudo systemctl daemon-reload && sudo systemctl restart ma5-bot
 텔레그램이 안 될 때는 서버에서 바로:
 
 ```bash
-python cli.py buy 005930 1000만            # 1,000만원어치 시장가
-python cli.py buy 005930 10 71500          # 10주 지정가
-python cli.py sell 005930                  # 전량 시장가
-python cli.py sell 005930 5 72000
+# 순서: 종목코드 가격 수량 (가격에 시장가 · m · 0 을 쓰면 시장가)
+python cli.py buy 005930 71500 10          # 71,500원에 10주
+python cli.py buy 005930 m 1000만          # 시장가로 1,000만원어치
+python cli.py sell 005930 72000 5          # 72,000원에 5주
+python cli.py sell 005930 m                # 시장가로 전량
 python cli.py bal / orders / cancel all / fills / progress
 ```
 
@@ -388,8 +389,8 @@ python infra/aws_cleanup.py --region ap-southeast-2 --prefix stock-bot
 | `/pause` | 자동 진입 정지 (보유 종목 청산 감시는 계속) |
 | `/resume` | 재개 |
 | `/close 005930` | 자동매매 포지션 강제 청산 |
-| `/buy 005930 10 [가격]` | 수동 매수 — 수량 대신 `1000만` · `5천만원` · `1억` 같은 금액도 된다. 가격 생략 = 시장가 |
-| `/sell 005930 [수량\|all] [가격]` | 수동 매도 — 수량 생략 = 매도 가능 수량 전부 |
+| `/buy 005930 71500 10` | 수동 매수 (종목코드 가격 수량). 수량 대신 `1000만` · `5천만원` · `1억` 같은 금액도 된다. 가격에 `시장가` · `m` · `0` = 시장가 |
+| `/sell 005930 72000 [수량\|all]` | 수동 매도 (종목코드 가격 수량). 수량 생략 = 매도 가능 수량 전부 |
 | `/bal` | 잔고 · 예수금 |
 | `/orders` · `/cancel 주문번호\|all` | 미체결 조회 · 취소 |
 | `/fills` | 오늘 체결 |

@@ -337,11 +337,11 @@ def _manual_call(fn, *a) -> int:
 
 
 def cmd_buy(args) -> int:
-    return _manual_call("buy", args.ticker, args.qty, args.price)
+    return _manual_call("buy", args.ticker, args.price, args.qty)
 
 
 def cmd_sell(args) -> int:
-    return _manual_call("sell", args.ticker, args.qty, args.price)
+    return _manual_call("sell", args.ticker, args.price, args.qty)
 
 
 def cmd_bal(args) -> int:
@@ -516,13 +516,13 @@ def main() -> int:
         p = sub.add_parser(name, help=help_text)
         p.set_defaults(func=fn)
 
-    p = sub.add_parser("buy", help="수동 매수: buy 종목코드 수량|금액 [가격]  예) buy 005930 1000만")
-    p.add_argument("ticker"); p.add_argument("qty", help="10 (주) · 1000만 · 5천만원 · 1억")
-    p.add_argument("price", nargs="?", default=None, help="생략하면 시장가")
+    p = sub.add_parser("buy", help="수동 매수: buy 종목코드 가격 수량|금액  예) buy 005930 71500 10")
+    p.add_argument("ticker"); p.add_argument("price", help="71500 · 시장가(m, 0)")
+    p.add_argument("qty", help="10 (주) · 1000만 · 5천만원 · 1억")
     p.set_defaults(func=cmd_buy)
-    p = sub.add_parser("sell", help="수동 매도: sell 종목코드 [수량|all] [가격]")
-    p.add_argument("ticker"); p.add_argument("qty", nargs="?", default=None, help="생략/all = 전량")
-    p.add_argument("price", nargs="?", default=None, help="생략하면 시장가")
+    p = sub.add_parser("sell", help="수동 매도: sell 종목코드 가격 [수량|all]  예) sell 005930 72000 5")
+    p.add_argument("ticker"); p.add_argument("price", help="72000 · 시장가(m, 0)")
+    p.add_argument("qty", nargs="?", default=None, help="생략/all = 전량")
     p.set_defaults(func=cmd_sell)
     p = sub.add_parser("cancel", help="미체결 취소: cancel 주문번호|all")
     p.add_argument("target", nargs="?", default="all")

@@ -112,7 +112,7 @@ def _cmd_history() -> str:
 
 def _cmd_sell(args: list[str]) -> str:
     if not args:
-        return "종목코드를 넣어라. 예: /sell 005930"
+        return "종목코드를 넣어라. 예: /close 005930"
 
     ticker = args[0].strip()
     pos = state.get_position(ticker)
@@ -161,13 +161,13 @@ def handle(text: str, chat_id: int) -> str:
         if cmd == "manual":
             return manual.HELP
         if cmd == "buy":
-            if len(args) < 2:
-                return "예) /buy 005930 10  ·  /buy 005930 1000만 71500\n\n" + manual.HELP
-            return manual.buy(args[0], args[1], args[2] if len(args) > 2 else None)
+            if len(args) < 3:
+                return "종목코드 가격 수량 순서\n예) /buy 005930 71500 10  ·  /buy 005930 시장가 1000만\n\n" + manual.HELP
+            return manual.buy(args[0], args[1], args[2])
         if cmd == "sell":
-            if not args:
-                return "예) /sell 005930  ·  /sell 005930 5 72000\n\n" + manual.HELP
-            return manual.sell(args[0], args[1] if len(args) > 1 else None, args[2] if len(args) > 2 else None)
+            if len(args) < 2:
+                return "종목코드 가격 [수량] 순서\n예) /sell 005930 72000 5  ·  /sell 005930 시장가\n\n" + manual.HELP
+            return manual.sell(args[0], args[1], args[2] if len(args) > 2 else None)
         if cmd in ("bal", "balance"):
             return manual.balance()
         if cmd == "orders":

@@ -4,13 +4,15 @@ core/manual.py — 수동 매매 (한투 OpenAPI 로 직접 사고판다). 대�
 텔레그램 (/buy /sell /bal /orders /cancel /fills /progress) 과 CLI (python cli.py buy ...) 가 같은 함수를 쓴다.
 자동매매 상태(state.json) 에는 기록하지 않는다 → 자동 전략이 수동 매수 종목을 팔거나 슬롯으로 세지 않는다.
 
+순서는 종목코드 · 가격 · 수량
+
+가격 표기
+  71500     지정가 71,500원 (호가 단위로 맞춘다)
+  시장가 · m · 0   시장가
 수량 · 금액 표기
   10        10주
   1000만    1,000만원어치 (현재가 기준으로 수량 계산)      500만원 · 1억 · 20000000원 도 된다
-  all       (매도) 매도 가능 수량 전부
-가격 표기
-  생략      시장가
-  71500     지정가 71,500원 (호가 단위로 맞춘다)
+  all       (매도) 매도 가능 수량 전부 — 생략해도 전부
 """
 from __future__ import annotations
 
@@ -26,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 HELP = """수동 매매 (한투 OpenAPI 주문)
 
-/buy 종목코드 수량|금액 [가격]
-   예) /buy 005930 10          10주 시장가
-       /buy 005930 1000만 71500  1,000만원어치 지정가
-/sell 종목코드 [수량|all] [가격]
-   예) /sell 005930            전량 시장가
-       /sell 005930 5 72000    5주 지정가
+/buy 종목코드 가격 수량|금액
+   예) /buy 005930 71500 10      71,500원에 10주
+       /buy 005930 시장가 1000만  시장가로 1,000만원어치
+/sell 종목코드 가격 [수량|all]
+   예) /sell 005930 72000 5      72,000원에 5주
+       /sell 005930 시장가       시장가로 전량
+   (가격에 시장가 · m · 0 을 쓰면 시장가)
 /bal       잔고 · 예수금
 /orders    미체결 주문
 /cancel 주문번호|all   미체결 취소
@@ -82,8 +85,8 @@ def parse_qty_or_amount(s: str) -> tuple[int | None, float | None]:
 
 
 def parse_price(s: str | None) -> int | None:
-    """None/'시장가' → None(시장가), 숫자 → 지정가."""
-    if s is None or s in ("시장가", "m", "mkt"):
+    """None/'시장가'/'m'/'0' → None(시장가), 숫자 → 지정가."""
+    if s is None or s.lower() in ("시장가", "m", "mkt", "market", "0"):
         return None
     t = s.replace(",", "").rstrip("원")
     if not t.isdigit():
@@ -109,10 +112,10 @@ def _norm_ticker(s: str) -> str:
 # ══════════════════════════════════════════════════════════════
 # 주문
 # ══════════════════════════════════════════════════════════════
-def buy(ticker: str, qty_or_amount: str, price: str | None = None) -> str:
+def buy(ticker: str, price: str | None, qty_or_amount: str) -> str:
     ticker = _norm_ticker(ticker)
-    qty, amount = parse_qty_or_amount(qty_or_amount)
     limit = parse_price(price)
+    qty, amount = parse_qty_or_amount(qty_or_amount)
     q = quotes.get_price(ticker)
     name = _name(ticker)
     if q["is_halted"]:
@@ -141,8 +144,9 @@ def buy(ticker: str, qty_or_amount: str, price: str | None = None) -> str:
             + ("\n(DRY_RUN — 실제 주문 아님)" if r.get("dry_run") else ""))
 
 
-def sell(ticker: str, qty_or_all: str | None = None, price: str | None = None) -> str:
+def sell(ticker: str, price: str | None = None, qty_or_all: str | None = None) -> str:
     ticker = _norm_ticker(ticker)
+    limit = parse_price(price)
     hold = next((h for h in trading.get_balance()["holdings"] if h["ticker"] == ticker), None)
     if hold is None:
         return f"⚠️ {ticker} 보유 없음"
@@ -155,7 +159,6 @@ def sell(ticker: str, qty_or_all: str | None = None, price: str | None = None) -
             qty = int(amount // max(hold["price"], 1))
     if qty <= 0 or qty > can:
         return f"⚠️ 매도 가능 수량 {can:,}주 (요청 {qty:,}주)"
-    limit = parse_price(price)
     if limit:
         limit = int(round_to_tick(limit, "nearest"))
     r = trading.sell(ticker, qty, limit or 0, market=limit is None)
