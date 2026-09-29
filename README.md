@@ -324,6 +324,36 @@ sudo systemctl status ma5-bot
 tail -f /opt/ma5-bot/bot.log
 ```
 
+### 수동 매매 전용으로 돌리기 (대회 조건을 직접 채울 때)
+
+자동매매 없이 텔레그램으로 내가 직접 사고판다. 주문은 한투 OpenAPI 로 나가므로 대회의 'OpenAPI 거래' 로 잡힌다.
+
+```bash
+python cli.py manual                       # 텔레그램 /buy /sell ... 만 받는 상주 실행 (스케줄러 없음)
+BOT_MODE=manual bash infra/ncp/setup.sh    # 서버에 이 모드로 systemd 등록
+```
+
+이미 `serve` 로 떠 있는 서버라면 서비스의 실행 명령만 바꾸면 된다:
+
+```bash
+sudo sed -i 's#cli.py serve#cli.py manual#' /etc/systemd/system/ma5-bot.service
+sudo systemctl daemon-reload && sudo systemctl restart ma5-bot
+```
+
+`serve` 에도 같은 명령이 들어 있어서 자동매매와 같이 써도 된다 (수동 주문은 `state.json` 에 안 남기므로
+자동 전략이 그 종목을 팔거나 슬롯으로 세지 않는다. 다만 현금은 같이 쓴다). 같은 텔레그램 봇으로
+`serve` 와 `manual` 을 동시에 띄우면 롱폴링이 충돌하니 하나만 띄운다.
+
+텔레그램이 안 될 때는 서버에서 바로:
+
+```bash
+python cli.py buy 005930 1000만            # 1,000만원어치 시장가
+python cli.py buy 005930 10 71500          # 10주 지정가
+python cli.py sell 005930                  # 전량 시장가
+python cli.py sell 005930 5 72000
+python cli.py bal / orders / cancel all / fills / progress
+```
+
 ### B. AWS 람다 (대안)
 
 ```bash
@@ -357,7 +387,14 @@ python infra/aws_cleanup.py --region ap-southeast-2 --prefix stock-bot
 | `/config` | 현재 설정 확인 |
 | `/pause` | 자동 진입 정지 (보유 종목 청산 감시는 계속) |
 | `/resume` | 재개 |
-| `/sell 005930` | 강제 청산 |
+| `/close 005930` | 자동매매 포지션 강제 청산 |
+| `/buy 005930 10 [가격]` | 수동 매수 — 수량 대신 `1000만` · `5천만원` · `1억` 같은 금액도 된다. 가격 생략 = 시장가 |
+| `/sell 005930 [수량\|all] [가격]` | 수동 매도 — 수량 생략 = 매도 가능 수량 전부 |
+| `/bal` | 잔고 · 예수금 |
+| `/orders` · `/cancel 주문번호\|all` | 미체결 조회 · 취소 |
+| `/fills` | 오늘 체결 |
+| `/progress` | 대회 조건 진행 (`CONTEST_START` 부터 매매금액 · 매매일수 · 종목수) |
+| `/manual` | 수동 매매 도움말 |
 
 LLM은 쓰지 않는다. 매매 판단은 전부 코드가 하고, 텔레그램은 모니터링과 비상 개입용이다.
 

@@ -24,7 +24,9 @@ HELP = """자동매매 봇 (/config 로 전략 확인)
 /config   현재 설정
 /pause    자동매매 일시정지
 /resume   자동매매 재개
-/sell 종목코드  강제 청산"""
+/close 종목코드  자동매매 포지션 강제 청산
+
+수동 매매: /buy /sell /bal /orders /cancel /fills /progress (/manual 로 자세히)"""
 
 
 def _cmd_status() -> str:
@@ -152,8 +154,32 @@ def handle(text: str, chat_id: int) -> str:
         if cmd == "resume":
             state.set_paused(False)
             return "▶️ 자동매매를 재개했다."
-        if cmd == "sell":
+        if cmd == "close":
             return _cmd_sell(args)
+        # ── 수동 매매 (한투 OpenAPI 주문, 자동매매 상태에는 기록 안 함)
+        from core import manual
+        if cmd == "manual":
+            return manual.HELP
+        if cmd == "buy":
+            if len(args) < 2:
+                return "예) /buy 005930 10  ·  /buy 005930 1000만 71500\n\n" + manual.HELP
+            return manual.buy(args[0], args[1], args[2] if len(args) > 2 else None)
+        if cmd == "sell":
+            if not args:
+                return "예) /sell 005930  ·  /sell 005930 5 72000\n\n" + manual.HELP
+            return manual.sell(args[0], args[1] if len(args) > 1 else None, args[2] if len(args) > 2 else None)
+        if cmd in ("bal", "balance"):
+            return manual.balance()
+        if cmd == "orders":
+            return manual.orders()
+        if cmd == "cancel":
+            return manual.cancel(args[0] if args else "all")
+        if cmd == "fills":
+            return manual.fills()
+        if cmd == "progress":
+            return manual.progress()
+    except ValueError as e:
+        return f"⚠️ {e}"
     except Exception as e:
         logger.exception("명령 처리 실패: %s", text)
         return f"⚠️ 처리 중 오류\n{type(e).__name__}: {e}"

@@ -6,11 +6,15 @@
 #   curl -fsSL <이 파일 주소> | bash
 # 또는 저장소를 올린 뒤:
 #   bash infra/ncp/setup.sh
+# 수동 매매 전용 (자동매매 없이 텔레그램 /buy /sell 만):
+#   BOT_MODE=manual bash infra/ncp/setup.sh
 #
 set -euo pipefail
 
 APP_USER="${SUDO_USER:-$(whoami)}"
 SERVICE_NAME="ma5-bot"
+BOT_MODE="${BOT_MODE:-serve}"          # serve = 자동매매 + 텔레그램, manual = 텔레그램 수동 매매만
+case "$BOT_MODE" in serve|manual) ;; *) echo "BOT_MODE 는 serve 또는 manual"; exit 1 ;; esac
 
 # 스크립트가 소스 트리 안에 있으면 그 경로를 쓴다 (어디에 올렸든 동작하도록).
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +24,7 @@ if [ -z "${APP_DIR:-}" ] && [ -f "$_GUESS/cli.py" ]; then
 else
   APP_DIR="${APP_DIR:-/opt/ma5-bot}"
 fi
-echo "앱 경로: $APP_DIR"
+echo "앱 경로: $APP_DIR  (실행 모드: $BOT_MODE)"
 
 echo "== 1. 시간대를 KST 로 =="
 # 장 시간 판단이 전부 KST 기준이다. 서버가 UTC 면 로그 시각이 9시간 어긋나 헷갈린다.
@@ -100,7 +104,7 @@ User=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=TZ=Asia/Seoul
-ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/cli.py serve
+ExecStart=${APP_DIR}/.venv/bin/python ${APP_DIR}/cli.py ${BOT_MODE}
 Restart=always
 RestartSec=10
 StandardOutput=append:${APP_DIR}/bot.log

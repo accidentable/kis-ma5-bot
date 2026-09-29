@@ -68,5 +68,12 @@ def set_commands() -> None:
         {"command": "config", "description": "현재 설정 확인"},
         {"command": "pause", "description": "자동매매 일시정지"},
         {"command": "resume", "description": "자동매매 재개"},
-        {"command": "sell", "description": "강제 청산 (/sell 종목코드)"},
+        {"command": "buy", "description": "수동 매수 (/buy 종목 수량|금액 [가격])"},
+        {"command": "sell", "description": "수동 매도 (/sell 종목 [수량|all] [가격])"},
+        {"command": "bal", "description": "잔고 · 예수금"},
+        {"command": "orders", "description": "미체결 주문"},
+        {"command": "cancel", "description": "미체결 취소 (/cancel 주문번호|all)"},
+        {"command": "fills", "description": "오늘 체결"},
+        {"command": "progress", "description": "대회 조건 진행"},
+        {"command": "close", "description": "자동매매 포지션 강제 청산 (/close 종목코드)"},
     ]})

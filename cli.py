@@ -326,6 +326,66 @@ def cmd_panic(args) -> int:
     return 0
 
 
+def _manual_call(fn, *a) -> int:
+    from core import manual
+    try:
+        print(getattr(manual, fn)(*a))
+    except ValueError as e:
+        print(f"⚠️ {e}")
+        return 1
+    return 0
+
+
+def cmd_buy(args) -> int:
+    return _manual_call("buy", args.ticker, args.qty, args.price)
+
+
+def cmd_sell(args) -> int:
+    return _manual_call("sell", args.ticker, args.qty, args.price)
+
+
+def cmd_bal(args) -> int:
+    return _manual_call("balance")
+
+
+def cmd_orders(args) -> int:
+    return _manual_call("orders")
+
+
+def cmd_cancel(args) -> int:
+    return _manual_call("cancel", args.target)
+
+
+def cmd_fills(args) -> int:
+    return _manual_call("fills")
+
+
+def cmd_progress(args) -> int:
+    return _manual_call("progress")
+
+
+def cmd_manual(args) -> int:
+    """수동 매매 전용 상주 실행 — 자동매매 스케줄 없이 텔레그램 명령(/buy /sell ...)만 받는다."""
+    import signal
+    import threading
+
+    import config
+    from core import manual, notify, poller
+
+    notify.set_commands()
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    notify.send("🖐 수동 매매 모드 시작 (자동매매 꺼짐)\n" + ("DRY_RUN — 주문 안 나감\n\n" if config.DRY_RUN else "\n")
+                + manual.HELP)
+    try:
+        poller.run(stop)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        notify.send("🛑 수동 매매 모드 종료")
+    return 0
+
+
 def cmd_status(args) -> int:
     from core import commands
     import config
@@ -455,6 +515,22 @@ def main() -> int:
     ]:
         p = sub.add_parser(name, help=help_text)
         p.set_defaults(func=fn)
+
+    p = sub.add_parser("buy", help="수동 매수: buy 종목코드 수량|금액 [가격]  예) buy 005930 1000만")
+    p.add_argument("ticker"); p.add_argument("qty", help="10 (주) · 1000만 · 5천만원 · 1억")
+    p.add_argument("price", nargs="?", default=None, help="생략하면 시장가")
+    p.set_defaults(func=cmd_buy)
+    p = sub.add_parser("sell", help="수동 매도: sell 종목코드 [수량|all] [가격]")
+    p.add_argument("ticker"); p.add_argument("qty", nargs="?", default=None, help="생략/all = 전량")
+    p.add_argument("price", nargs="?", default=None, help="생략하면 시장가")
+    p.set_defaults(func=cmd_sell)
+    p = sub.add_parser("cancel", help="미체결 취소: cancel 주문번호|all")
+    p.add_argument("target", nargs="?", default="all")
+    p.set_defaults(func=cmd_cancel)
+    for name, fn, help_text in [("bal", cmd_bal, "잔고 · 예수금"), ("orders", cmd_orders, "미체결 주문"),
+                                ("fills", cmd_fills, "오늘 체결"), ("progress", cmd_progress, "대회 조건 진행"),
+                                ("manual", cmd_manual, "수동 매매 전용 상주 실행 (텔레그램 /buy /sell 만)")]:
+        sub.add_parser(name, help=help_text).set_defaults(func=fn)
 
     args = parser.parse_args()
     setup_logging(logging.DEBUG if args.verbose else logging.INFO)

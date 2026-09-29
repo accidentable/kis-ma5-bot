@@ -134,6 +134,12 @@ PANIC_VR_MAX: float = _env_float("PANIC_VR_MAX", 3.0)                   # 오늘
 PANIC_CANDIDATES: int = _env_int("PANIC_CANDIDATES", 15)                # 저장할 후보 수 (못 사면 다음 순위)
 PANIC_SCAN_TIME: str = os.getenv("PANIC_SCAN_TIME", "1535").strip()     # 급락 판정 (시총 1500 × 일봉, 모의투자 약 10분)
 
+# ── 대회 수상 조건 (수동 매매 /progress 가 비교한다) ───────────
+CONTEST_START: str = os.getenv("CONTEST_START", "").strip()          # 예: 2026-11-02. 비우면 이번 달 1일
+CONTEST_MIN_AMOUNT: float = _env_float("CONTEST_MIN_AMOUNT", 500_000_000)   # 매매금액 (체결, 매수+매도)
+CONTEST_MIN_DAYS: int = _env_int("CONTEST_MIN_DAYS", 5)                    # 매매일수
+CONTEST_MIN_STOCKS: int = _env_int("CONTEST_MIN_STOCKS", 5)                # 매매종목수 (코스피200 · 코스닥150)
+
 # ── 종가 베팅 (STRATEGY=closebet, 선택형 — 기본 아님) ───────────
 # 당일 강세 마감 테마주(거래대금 상위)를 장마감 동시호가에 사서 다음 날 장전 동시호가에 판다.
 # 16년 백테스트에서 기대값 0 근처 (IS +0.4%, VAL −0.8%, TEST +0.3% / 한 달). 검증을 통과하지 못했다.
