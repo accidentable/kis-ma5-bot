@@ -90,5 +90,5 @@ with open(OUT, 'a', encoding='utf-8') as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + '\n'); fh.flush(); n_new += 1
         if n_new % 50 == 0:
             print(f'  {n_new}건 받음 ({i + 1}/{len(ev)} 위치) {time.time() - t0:.0f}s — 마지막 {d} {name} {len(items)}건', flush=True)
-        time.sleep(2.0 + random.random() * 1.0)
+        time.sleep(5.0 + random.random() * 2.0)        # 2~3초 간격으론 1,000건쯤마다 403 이 왔다
 print(f'끝: 새로 {n_new}건, {time.time() - t0:.0f}s', flush=True)
