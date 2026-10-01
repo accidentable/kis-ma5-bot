@@ -52,8 +52,10 @@ def classify(rec):
     return g, cats, drop, len(named)
 
 
+SRC = sys.argv[1] if len(sys.argv) > 1 else 'google'          # google | naver
+PATH = {'google': '/data/lab/gnews/events.jsonl', 'naver': '/data/lab/gnews/events_naver.jsonl'}[SRC]
 rows = []
-for line in open('/data/lab/gnews/events.jsonl', encoding='utf-8'):
+for line in open(PATH, encoding='utf-8'):
     try: r = json.loads(line)
     except Exception: continue
     t, j = didx.get(r['date']), cidx.get(r['code'])
@@ -66,7 +68,7 @@ for line in open('/data/lab/gnews/events.jsonl', encoding='utf-8'):
                      per=('2011~2019' if r['date'] < '20200101' else '2020~2025' if r['date'] < '20260101' else '2026'),
                      proxy_news=((r['vr'] or 0) >= 3) or ((r['z'] if r['z'] is not None else 0) <= -3)))
 lines = []; P = lambda s='': (lines.append(s), print(s, flush=True))
-P(f'급락 사건 뉴스 분석 — 받은 사건 {len(rows)}건 (폭락일 {sum(r["crash"] for r in rows)}건), 수익 = D 종가 매수 → D+6 시가, 비용 포함')
+P(f'급락 사건 뉴스 분석 [{SRC}] — 받은 사건 {len(rows)}건 (폭락일 {sum(r["crash"] for r in rows)}건), 수익 = D 종가 매수 → D+6 시가, 비용 포함')
 
 
 def st(sel, key='r6'):
@@ -101,5 +103,5 @@ for g in ('G0 기사 없음', 'G1 회사명 기사 없음', 'G2 회사명 기사
 P('\n■ 악재 키워드 사건 예 (최근 10건)')
 for r in [r for r in rows if r['g'] == 'G3 악재 키워드'][:10]:
     P(f'  {r["date"]} {r["name"]} {r["r1"] * 100:+.1f}% → {r["r6"] * 100:+.1f}% {sorted(r["cats"])}')
-open('backtest/results/lab_gnews_dips.md', 'w', encoding='utf-8').write(
-    '# 급락 사건 구글 뉴스 분석 (backtest/lab/fresh/gnews_analyze.py)\n\n정의는 스크립트 머리말 참고. 수집 상태에 따라 사건 수가 달라진다.\n\n```\n' + '\n'.join(lines) + '\n```\n')
+open(f'backtest/results/lab_gnews_dips{"" if SRC == "google" else "_" + SRC}.md', 'w', encoding='utf-8').write(
+    f'# 급락 사건 뉴스 분석 [{SRC}] (backtest/lab/fresh/gnews_analyze.py {SRC})\n\n정의는 스크립트 머리말 참고. 수집 상태에 따라 사건 수가 달라진다.\n\n```\n' + '\n'.join(lines) + '\n```\n')
