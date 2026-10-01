@@ -37,6 +37,25 @@ def _open_day(force: bool) -> bool:
     return force or quotes.is_open_day(date.today())
 
 
+def _won(x: float) -> str:
+    """돈을 짧게: 1.23억 / 9,967만"""
+    x = float(x or 0)
+    return f"{x / 1e8:.2f}억" if abs(x) >= 1e8 else f"{x / 1e4:,.0f}만"
+
+
+def _md(d: str | None = None) -> str:
+    d = d or _today()
+    return f"{d[5:7]}/{d[8:10]}"
+
+
+def _pos_line(p: dict, price: float | None = None) -> str:
+    entry = float(p.get("entry_price", 0) or 0)
+    px = price if price else 0
+    pnl = f" ({px / entry - 1:+.1%})" if (entry and px) else ""
+    kind = {"crash": " 폭락", "filler": " 조건용"}.get(p.get("kind", ""), "")
+    return f"{p.get('name', '')} {int(p['qty']):,}주{pnl}{kind} · {_held_days(p)}일째"
+
+
 def get() -> dict:
     return dict(state.load().get("contest") or {})
 
@@ -133,37 +152,44 @@ def prep(force: bool = False) -> dict:
 
 
 def morning_brief(uni: list[dict], hist: dict, fail: list[str], ct: dict) -> str:
-    """08:20 브리핑: 어제 종가 기준 모멘텀 상위 CT_BRIEF_N (오늘 15:05 판정에서 바뀔 수 있다), 보유, 오늘 아침 매도 예정, 월초 대비."""
-    lines = [f"🌅 대회 모드 아침 브리핑 {_today()} — 대상 {len(uni)}종목 (코스피 {sum(1 for s in uni if s['market'] == 'KOSPI')} · 코스닥 {sum(1 for s in uni if s['market'] == 'KOSDAQ')})"
-             + (f", 일봉 실패 {len(fail)}" if fail else "")]
+    """08:20 브리핑 — 한 줄에 하나씩, 휴대폰 폭에 맞게."""
     anchor = float(ct.get("anchor", 0) or 0)
+    lines = [f"🌅 {_md()} 아침 브리핑" + (f"  (일봉 실패 {len(fail)})" if fail else ""), ""]
     try:
         nav = _nav()
-        lines.append(f"💰 순자산 {nav:,.0f}원" + (f" | 월초 대비 {(nav / anchor - 1) * 100:+.2f}% (목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%})" if anchor else ""))
     except Exception as e:
         logger.warning("브리핑 잔고 조회 실패: %s", e)
-    if ct.get("locked"):
-        lines.append(f"🔒 목표 달성 상태 ({ct.get('locked_date')}) — 이번 달은 현금 유지, 매수 없음")
-    else:
-        snaps = []
-        for s in uni:
-            h = hist.get(s["ticker"]) or {}
-            c = list(h.get("closes") or [])
-            if len(c) < config.CT_LOOKBACK + 2 or c[-1] <= 0 or c[-2] <= 0:
-                continue
-            snaps.append(Snap(ticker=s["ticker"], name=s.get("name", ""), market=s.get("market", ""), price=c[-1], prev_close=c[-2],
-                              change_pct=(c[-1] / c[-2] - 1) * 100, upper_limit=0, lower_limit=0, value=0, closes=c[:-1], values=list(h.get("values") or [])[:-1]))
-        cands, st = rank_momentum(snaps)
-        held = {p["ticker"] for p in _positions()}
-        lines.append(f"📈 어제 종가 기준 {config.CT_LOOKBACK}일 모멘텀 상위 (15:05 판정 때 바뀔 수 있음, 컷 {st['cutoff'] * 100 if st.get('cutoff') is not None else 0:+.1f}%):")
-        for i, s_ in enumerate(cands[:config.CT_BRIEF_N], 1):
-            lines.append(f"  {i}. {s_.name}({s_.ticker}) {s_.ret_n * 100:+.1f}% · 어제 {s_.change_pct:+.1f}%" + (" ← 보유" if s_.ticker in held else ""))
     pos = _positions()
     if pos:
-        lines.append("📌 보유: " + ", ".join(f"{p.get('name', '')}({p['ticker']}) {p['qty']:,}주 [{p.get('kind')}] {_held_days(p)}일" for p in pos))
+        for p in pos:
+            try:
+                px = float(quotes.get_price(p["ticker"])["price"])
+            except Exception:
+                px = 0
+            lines.append("📌 " + _pos_line(p, px))
+    else:
+        lines.append("📌 보유 없음")
     pend = ct.get("pending_exit") or []
     if pend:
-        lines.append("🌅 오늘 08:45 시가 매도: " + ", ".join(f"{x['ticker']} ({x['reason']})" for x in pend))
+        names = {p["ticker"]: p.get("name", "") for p in pos}
+        lines.append("⏰ 08:45 매도: " + ", ".join(f"{names.get(x['ticker'], x['ticker'])} ({x['reason'].split(' (')[0]})" for x in pend))
+    if ct.get("locked"):
+        lines += ["", f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 이번 달 매수 없음"]
+        return "\n".join(lines)
+    snaps = []
+    for s_ in uni:
+        h = hist.get(s_["ticker"]) or {}
+        c = list(h.get("closes") or [])
+        if len(c) < config.CT_LOOKBACK + 2 or c[-1] <= 0 or c[-2] <= 0:
+            continue
+        snaps.append(Snap(ticker=s_["ticker"], name=s_.get("name", ""), market=s_.get("market", ""), price=c[-1], prev_close=c[-2],
+                          change_pct=(c[-1] / c[-2] - 1) * 100, upper_limit=0, lower_limit=0, value=0, closes=c[:-1], values=list(h.get("values") or [])[:-1]))
+    cands, st = rank_momentum(snaps)
+    held = {p["ticker"] for p in pos}
+    lines += ["", f"📈 어제 종가 기준 후보 ({config.CT_LOOKBACK}일 수익률)", "   15:05 에 오늘 가격으로 확정"]
+    for i, s_ in enumerate(cands[:config.CT_BRIEF_N], 1):
+        lines.append(f"{i}. {s_.name} {s_.ret_n:+.0%}  (어제 {s_.change_pct:+.1f}%)" + ("  ← 보유" if s_.ticker in held else ""))
     return "\n".join(lines)
 
 
@@ -246,31 +272,35 @@ def scan(force: bool = False) -> dict:
 
 def scan_text(plan: dict, snaps_n: int = 0, fail: int = 0) -> str:
     c = plan.get("crash") or {}
-    mk = f"시장 {c.get('mkt', 0) * 100:+.2f}%" + (f" (기준 {c['threshold'] * 100:+.2f}%)" if c.get("threshold") else "")
-    lines = [f"🔎 대회 모드 판정 {plan.get('date')} — {snaps_n}종목" + (f", 조회 실패 {fail}" if fail else "") + f" | {mk}"]
+    lines = [f"🔎 {_md(plan.get('date'))} 15:05 판정",
+             f"시장 {c.get('mkt', 0):+.2%}" + (f"  (폭락 기준 {c['threshold']:+.2%})" if c.get("threshold") else "") + (f"  조회 실패 {fail}" if fail else ""), ""]
     mode = plan.get("mode")
     if mode == "locked":
         lines.append("🔒 이번 달 목표 달성 — 매수 없음")
     elif mode == "crash":
-        lines.append(f"🚨 폭락 전환! 보유 매도 {len(plan.get('sell_now', []))} → 급락주 매수 {len(plan['buy'])}")
+        lines.append(f"🚨 폭락 전환!  보유 {len(plan.get('sell_now', []))}종목 매도")
         for b in plan["buy"]:
-            lines.append(f"  🟢 {b['name']}({b['ticker']}) {b['price']:,.0f}원 오늘 {b['signal'].get('change_pct', 0):+.1f}%")
-        if plan.get("stats", {}).get("rejects"):
-            lines.append(f"  탈락: {plan['stats']['rejects']}")
+            lines.append(f"🟢 {b['name']} {b['price']:,.0f}원  (오늘 {b['signal'].get('change_pct', 0):+.1f}%)")
+        rj = plan.get("stats", {}).get("rejects")
+        if rj:
+            lines.append("   제외: " + ", ".join(f"{k} {v}" for k, v in rj.items()))
     elif mode == "crash_hold":
-        lines.append("폭락 전환 보유 중 — 만료까지 대기")
+        lines.append("폭락 전환 종목 보유 중 — 만료까지 대기")
     else:
         st = plan.get("stats", {})
-        lines.append(f"모멘텀 상위 {st.get('top', 0)}/{st.get('eligible', 0)} (컷 {st.get('cutoff', 0) * 100 if st.get('cutoff') is not None else 0:+.1f}%)")
+        cut = st.get("cutoff")
+        lines.append(f"📈 모멘텀 상위 {st.get('top', 0)}종목" + (f"  (컷 {cut:+.0%})" if cut is not None else ""))
         for i, t in enumerate(plan.get("top", [])[:5], 1):
-            lines.append(f"  {i}. {t['name']}({t['ticker']}) {config.CT_LOOKBACK}일 {t['ret_n'] * 100:+.1f}% · 오늘 {t['change_pct']:+.1f}%")
+            lines.append(f"{i}. {t['name']} {t['ret_n']:+.0%}  (오늘 {t['change_pct']:+.1f}%)")
         buys = [b for b in plan["buy"] if b["kind"] == "momentum"]
         fill = [b for b in plan["buy"] if b["kind"] == "filler"]
-        lines.append("오늘 매수: " + (", ".join(f"{b['name']}({b['ticker']})" for b in buys) if buys else "없음 (슬롯 없음)"))
+        lines.append("")
+        lines.append("🟢 오늘 매수: " + (", ".join(b["name"] for b in buys) if buys else "없음 (보유 중)"))
         if fill:
-            lines.append("조건용 1주: " + ", ".join(b["name"] for b in fill))
-        if st.get("rejects"):
-            lines.append(f"탈락: {st['rejects']}")
+            lines.append("   조건용 1주: " + ", ".join(b["name"] for b in fill))
+        rj = st.get("rejects")
+        if rj:
+            lines.append("   제외: " + ", ".join(f"{k} {v}" for k, v in rj.items()))
     return "\n".join(lines)
 
 
@@ -339,13 +369,15 @@ def buy_close(force: bool = False) -> dict:
         entered.append(pos)
     if any(p["kind"] == "filler" for p in entered):
         put(fillers_done=_month())
-    lines = [f"🌙 대회 모드 매수 {_today()} ({plan.get('mode')}) — 주문 {len(entered)}/{len(plan['buy'])}, 순자산 {nav:,.0f}원"]
-    for p in entered:
-        lines.append(f"🟢 {p['name']}({p['ticker']}) {p['qty']:,}주 @{p['entry_price']:,}원" + (" [조건용]" if p["kind"] == "filler" else ""))
+    lines = [f"🌙 {_md()} 종가 매수" + ("  (DRY_RUN · 주문 안 보냄)" if config.DRY_RUN else "") + ("  🚨 폭락 전환" if plan.get("mode") == "crash" else ""), ""]
+    for p in [p for p in entered if p["kind"] != "filler"]:
+        lines.append(f"🟢 {p['name']} {p['qty']:,}주 @{p['entry_price']:,}원")
+    fill = [p["name"] for p in entered if p["kind"] == "filler"]
+    if fill:
+        lines.append("   조건용 1주: " + ", ".join(fill))
     if skipped:
-        lines.append("못 삼: " + "; ".join(skipped[:5]))
-    if config.DRY_RUN:
-        lines.append("(DRY_RUN — 실제 주문 아님)")
+        lines.append("⚠️ 못 삼: " + "; ".join(skipped[:5]))
+    lines += ["", f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}"]
     notify.send("\n".join(lines))
     return {"entered": entered, "skipped": skipped}
 
@@ -358,8 +390,7 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
         return {"skipped": "휴장일"}
     trader.sync_fills()
     ct = get()
-    pending, lines = [], []
-    today_idx = 0
+    pending, lines, fillers = [], [], []
     for p in _positions():
         try:
             close = float(quotes.get_price(p["ticker"])["price"])
@@ -369,11 +400,20 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
         state.update_position(p["ticker"], peak_close=peak, hold_days=_held_days(p) + 1)
         reasons = exit_reasons({**p, "peak_close": peak, "entry_idx": 0}, close, _held_days(p))
         entry = float(p.get("entry_price", 0) or 0)
-        pnl = (close / entry - 1) * 100 if entry else 0
-        tag = " → 내일 시가 매도: " + ", ".join(reasons) if reasons else ""
-        lines.append(f"📌 {p.get('name', '')}({p['ticker']}) {p['qty']:,}주 진입 {entry:,.0f} 종가 {close:,.0f} {pnl:+.1f}% 고점 {peak:,.0f} {_held_days(p)}일{tag}")
+        if p.get("kind") == "filler":                       # 조건용 1주는 한 줄로 묶는다
+            fillers.append(p.get("name", ""))
+            if reasons:
+                pending.append({"ticker": p["ticker"], "reason": "; ".join(reasons)})
+            continue
+        kind = {"crash": " 폭락"}.get(p.get("kind", ""), "")
+        lines.append(f"📌 {p.get('name', '')} {int(p['qty']):,}주{kind}")
+        lines.append(f"   {entry:,.0f} → {close:,.0f}  ({close / entry - 1:+.1%})" if entry else f"   종가 {close:,.0f}")
+        lines.append(f"   고점 {peak:,.0f} · {_held_days(p)}일째")
         if reasons:
+            lines.append("   ⏰ 내일 시가 매도: " + ", ".join(r.split(" (")[0] for r in reasons))
             pending.append({"ticker": p["ticker"], "reason": "; ".join(reasons)})
+    if fillers:
+        lines.append("📎 조건용 1주: " + ", ".join(fillers) + " → 내일 시가 매도")
     locked = bool(ct.get("locked"))
     nav = None
     try:
@@ -385,15 +425,16 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
         locked = True
         put(locked=True, locked_date=_today())
         pending = [{"ticker": p["ticker"], "reason": f"목표 +{config.CT_LOCK_PCT:g}% 달성 락"} for p in _positions()]
-        lines.append(f"🎯 목표 달성! 순자산 {nav:,.0f}원 (월초 {anchor:,.0f}원, {(nav / anchor - 1) * 100:+.1f}%) — 내일 시가 전량 매도 후 월말까지 현금")
+        lines += ["", f"🎯 목표 달성!  {nav / anchor - 1:+.1%}", "   내일 시가 전량 매도 → 월말까지 현금"]
     put(pending_exit=pending)
-    head = f"🏁 대회 모드 마감 {_today()}" + (" [종이 계좌]" if config.DRY_RUN else "")
-    if nav is not None and anchor:
-        head += f" — 순자산 {nav:,.0f}원 (월초 대비 {(nav / anchor - 1) * 100:+.2f}%, 목표 +{config.CT_LOCK_PCT:g}%)"
+    head = [f"🏁 {_md()} 마감" + ("  (종이 계좌)" if config.DRY_RUN else "")]
+    if nav is not None:
+        head.append(f"💰 {_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+    head.append("")
     if not lines:
-        lines.append("보유 없음" + (" (🔒 락 상태)" if locked else ""))
+        lines.append("📌 보유 없음" + ("  🔒 락 상태" if locked else ""))
     if send_report:
-        notify.send("\n".join([head] + lines))
+        notify.send("\n".join(head + lines))
     return {"pending": pending, "locked": locked, "nav": nav}
 
 
@@ -444,7 +485,7 @@ def sell_open(force: bool = False) -> dict:
         (sold if rec else left).append(p["ticker"] if not rec else rec)
     put(pending_exit=[{"ticker": t, "reason": pend[t]} for t in left])
     if sold:
-        notify.send("🌅 대회 모드 시가 매도 주문\n" + "\n".join(f"· {r.get('name', '')}({r['ticker']}) {r.get('sold_qty', 0):,}주 — {r.get('exit_reason', '')}" for r in sold))
+        notify.send(f"🌅 {_md()} 시가 매도 주문\n\n" + "\n".join(f"🔴 {r.get('name', '')} {int(r.get('sold_qty', 0) or 0):,}주\n   {r.get('exit_reason', '').split(' (')[0]}" for r in sold))
     return {"sold": sold, "left": left}
 
 
@@ -472,26 +513,27 @@ def check_open(force: bool = False) -> dict:
 def status_text() -> str:
     ct = get()
     anchor = float(ct.get("anchor", 0) or 0)
-    lines = [f"전략: 대회 모드 — {config.CT_LOOKBACK}일 모멘텀 1위 {config.CT_SLOTS}종목, 손절 {config.CT_STOP_PCT:g}% · 추적 {config.CT_TRAIL_PCT:g}% · 보유 {config.CT_HOLD_DAYS}일, 목표 +{config.CT_LOCK_PCT:g}%"]
+    lines = ["🏆 대회 모드" + ("  (DRY_RUN)" if config.DRY_RUN else ""), f"{config.CT_LOOKBACK}일 모멘텀 1위 {config.CT_SLOTS}종목 · 손절 {config.CT_STOP_PCT:g}% · 고점 {config.CT_TRAIL_PCT:g}% · {config.CT_HOLD_DAYS}일", ""]
     try:
         nav = _nav()
-        lines.append(f"💰 순자산 {nav:,.0f}원" + (f" (월초 {anchor:,.0f}원 대비 {(nav / anchor - 1) * 100:+.2f}%)" if anchor else ""))
+        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
     except Exception as e:
         lines.append(f"잔고 조회 실패: {e}")
     if ct.get("locked"):
-        lines.append(f"🔒 목표 달성 ({ct.get('locked_date')}) — 월말까지 현금")
+        lines.append(f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 월말까지 현금")
     pos = _positions()
     if not pos:
-        lines.append("보유 없음")
+        lines.append("📌 보유 없음")
     for p in pos:
         try:
-            price = quotes.get_price(p["ticker"])["price"]
+            price = float(quotes.get_price(p["ticker"])["price"])
         except Exception:
             price = 0
         entry = float(p.get("entry_price", 0) or 0)
-        lines.append(f"📌 {p.get('name', '')}({p['ticker']}) {p['qty']:,}주 [{p.get('kind')}] 진입 {entry:,.0f} → 현재 {price:,.0f} "
-                     f"{(price / entry - 1) * 100 if entry and price else 0:+.1f}% | 고점 {float(p.get('peak_close', 0) or 0):,.0f} | {_held_days(p)}일")
+        lines.append("📌 " + _pos_line(p, price))
+        lines.append(f"   {entry:,.0f} → {price:,.0f} · 고점 {float(p.get('peak_close', 0) or 0):,.0f}")
     pend = ct.get("pending_exit") or []
     if pend:
-        lines.append("내일 시가 매도: " + ", ".join(f"{x['ticker']}({x['reason']})" for x in pend))
+        names = {p["ticker"]: p.get("name", "") for p in pos}
+        lines.append("⏰ 내일 시가 매도: " + ", ".join(f"{names.get(x['ticker'], x['ticker'])} ({x['reason'].split(' (')[0]})" for x in pend))
     return "\n".join(lines)

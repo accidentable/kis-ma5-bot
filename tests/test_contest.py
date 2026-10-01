@@ -148,7 +148,7 @@ def main() -> int:
     check("일봉 캐시 생성", r["hist"] == 10 and len(ct["hist"]["100010"]["closes"]) == 45)
     check("월초 기준 순자산 기록 · 락 해제", ct["anchor"] == 100_000_000 and ct["locked"] is False and ct["month"] == date.today().strftime("%Y-%m"))
     brief = SENT[-1]
-    check("아침 브리핑: 어제 종가 기준 상위 후보 + 순자산 (상한가는 아직 모르니 D 가 1위)", "아침 브리핑" in brief and "1. 상한가D" in brief and "2. 폭주A" in brief and "순자산" in brief, brief.replace("\n", " / "))
+    check("아침 브리핑: 어제 종가 기준 상위 후보 + 순자산 (상한가는 아직 모르니 D 가 1위)", "아침 브리핑" in brief and "1. 상한가D" in brief and "2. 폭주A" in brief and "💰 종이" in brief, brief.replace("\n", " / "))
 
     print("── 판정 (모멘텀) ─────────────────────")
     snaps, fail = contest.snapshots(ct)
@@ -256,7 +256,7 @@ def main() -> int:
 
     print("── 상태 문구 ────────────────────────────")
     txt = contest.status_text()
-    check("상태 문구에 전략·순자산·보유", "대회 모드" in txt and "순자산" in txt and "200010" in txt)
+    check("상태 문구에 전략·계좌·보유", "대회 모드" in txt and "💰" in txt and "코닥H" in txt, txt.replace("\n", " / "))
     check("판정 문구", "판정" in contest.scan_text(plan))
     check("설정 요약", "대회 모드" in config.summary())
 
