@@ -21,7 +21,8 @@ F, T, o, c, cf, tr, T5, CAND, PER = TS.F, TS.T, TS.o, TS.c, TS.cf, TS.tr, TS.T5,
 BUYC, SELLC, CAP, W = TS.BUYC, TS.SELLC, TS.CAP, TS.W
 
 
-def run_month(s, cand, k, lock, stop, trail, boost, mix):
+def run_month(s, cand, k, lock, stop, trail, boost, mix, hold=99):
+    """hold = 최대 보유 거래일 (n → n+1 일째 시가 매도, 99 = 월말까지). 1차 격자는 hold=99 로 돌았다 (만기 버그로 교체가 없었음)"""
     e = s + W - 1
     cash, pos, sell_open, locked, ov, kk = CAP, {}, set(), False, False, k
 
@@ -54,7 +55,7 @@ def run_month(s, cand, k, lock, stop, trail, boost, mix):
         if crash_now and not ov:
             for j in list(pos): sell(j, t, c[t, j])
             nv = nav(t)
-            for j in CAND['A'][t][:kk]: buy(j, t, c[t, j], 'A', nv / kk, t + 6)
+            for j in CAND['A'][t][:kk]: buy(j, t, c[t, j], 'A', nv / kk, 6)
             ov = True
         else:
             if ov and not any(p[4] == 'A' for p in pos.values()): ov = False
@@ -64,7 +65,7 @@ def run_month(s, cand, k, lock, stop, trail, boost, mix):
             if not ov and t < e:
                 free = kk - len(pos)
                 nv = nav(t)
-                for j in [j for j in CAND[cand][t] if j not in pos][:max(free, 0)]: buy(j, t, c[t, j], cand, nv / kk, min(t + 11, e + 1))
+                for j in [j for j in CAND[cand][t] if j not in pos][:max(free, 0)]: buy(j, t, c[t, j], cand, nv / kk, hold + 1 if hold < 99 else 99)
         if lock and nav(t) >= CAP * (1 + lock): locked = True
     for j in list(pos): sell(j, e, c[e, j])
     return cash / CAP - 1

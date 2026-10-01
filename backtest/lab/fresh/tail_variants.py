@@ -27,8 +27,8 @@ for n, r in RET.items():
     TS.CAND[f'D{n}'] = TS.lists(TS.pct_mask(r, 0.9, 1.0) & ~limup, r)
 
 
-def run_month(s, cand, k, hold, lock=0.30, stop=0.07, mix=False):
-    """tail_policy.run_month 와 같되 보유 기간을 바꿀 수 있게 (hold=20 이면 월말까지)"""
+def run_month(s, cand, k, hold, lock=0.30, stop=0.07, mix=False, trail=None):
+    """tail_policy.run_month 와 같되 보유 기간 · 추적 손절을 바꿀 수 있게 (hold=20 이면 월말까지)"""
     o, c, tr, T5, CAND = TS.o, TS.c, TS.tr, TS.T5, TS.CAND
     BUYC, SELLC, CAP, W = TS.BUYC, TS.SELLC, TS.CAP, TS.W
     e = s + W - 1; cash, pos, sell_open, locked, ov = CAP, {}, set(), False, False; names = []
@@ -58,15 +58,16 @@ def run_month(s, cand, k, hold, lock=0.30, stop=0.07, mix=False):
         if crash_now and not ov:
             for j in list(pos): sell(j, t, c[t, j])
             nv = nav(t)
-            for j in CAND['A'][t][:k]: buy(j, t, c[t, j], 'A', nv / k, t + 6)
+            for j in CAND['A'][t][:k]: buy(j, t, c[t, j], 'A', nv / k, 6)
             ov = True
         else:
             if ov and not any(p[4] == 'A' for p in pos.values()): ov = False
             for j, p in pos.items():
-                if stop and cf[t, j] <= p[1] * (1 - stop): sell_open.add(j)
+                p[2] = max(p[2], cf[t, j])
+                if (stop and cf[t, j] <= p[1] * (1 - stop)) or (trail and cf[t, j] <= p[2] * (1 - trail)): sell_open.add(j)
             if not ov and t < e:
                 nv = nav(t)
-                for j in [j for j in CAND[cand][t] if j not in pos][:max(k - len(pos), 0)]: buy(j, t, c[t, j], cand, nv / k, min(t + hold + 1, e + 1))
+                for j in [j for j in CAND[cand][t] if j not in pos][:max(k - len(pos), 0)]: buy(j, t, c[t, j], cand, nv / k, hold + 1 if hold < 20 else 99)
         if lock and nav(t) >= CAP * (1 + lock): locked = True
     for j in list(pos): sell(j, e, c[e, j])
     return cash / CAP - 1, names
@@ -77,23 +78,23 @@ def fmt(r): return f'{(r >= .2).mean() * 100:4.1f} {(r >= .3).mean() * 100:4.1f}
 
 if __name__ == '__main__':
     t0 = time.time(); lines = []; P = lambda s='': (lines.append(s), print(s, flush=True))
-    P('① 변형 격자 — 락30 · 손절7. 각 기간 열: +20%↑ · +30%↑ · −20%↓ · −30%↓ 확률(%) · 중앙 · 평균')
-    P(f'  {"설정":<30} | {"2011~2019":^34} | {"2020~2025":^34} | {"2026":^34}')
+    P('① 변형 격자 — 락30. 각 기간 열: +20%↑ · +30%↑ · −20%↓ · −30%↓ 확률(%) · 중앙 · 평균. 보유 20 = 월말까지(손절·추적·락만)')
+    P(f'  {"설정":<38} | {"2011~2019":^34} | {"2020~2025":^34} | {"2026":^34}')
     RES = {}
-    for n, hold, k, mix in itertools.product((5, 10, 20, 60), (5, 10, 20), (1, 2), (False, True)):
-        label = f'순위{n:>2}일 보유{hold:>2} k{k}{" +폭락" if mix else "     "}'
-        r = {pn: np.array([run_month(s, f'D{n}', k, hold, mix=mix)[0] for s in range(a, b)]) for pn, (a, b) in PER.items()}
-        RES[label] = r; P(f'  {label:<30} | ' + ' | '.join(fmt(r[pn]) for pn in PER))
+    for n, hold, k, mix, (stop, trail) in itertools.product((5, 10, 20, 60), (5, 10, 20), (1, 2), (False, True), ((0.07, None), (0.10, 0.10))):
+        label = f'순위{n:>2}일 보유{hold:>2} k{k}{" +폭락" if mix else "     "} 손절{stop * 100:.0f}{" 추적10" if trail else "      "}'
+        r = {pn: np.array([run_month(s, f'D{n}', k, hold, stop=stop, mix=mix, trail=trail)[0] for s in range(a, b)]) for pn, (a, b) in PER.items()}
+        RES[label] = r; P(f'  {label:<38} | ' + ' | '.join(fmt(r[pn]) for pn in PER))
     P('\n  2020~2025 +30% 확률 상위 10:')
-    for label, r in sorted(RES.items(), key=lambda kv: -(kv[1]['2020~2025'] >= .3).mean())[:10]:
-        P(f'    {label:<30} 2020~25 +30% {(r["2020~2025"] >= .3).mean() * 100:4.1f}% −30% {(r["2020~2025"] <= -.3).mean() * 100:4.1f}% | 2011~19 +30% {(r["2011~2019"] >= .3).mean() * 100:4.1f}% | 2026 +30% {(r["2026"] >= .3).mean() * 100:4.1f}%')
-    # ② ③ 대표 설정: 순위 20일 · 보유 10 · k2 · +폭락 (달력 달)
-    P('\n② 대표 설정 (순위 20일 · 보유 10 · k2 · 락30 · 손절7 · +폭락) — 달력 달 기준 (매달 첫 거래일에 시작, 20거래일)')
+    for label, r in sorted(RES.items(), key=lambda kv: -(kv[1]['2020~2025'] >= .3).mean())[:12]:
+        P(f'    {label:<38} 2020~25 +30% {(r["2020~2025"] >= .3).mean() * 100:4.1f}% −30% {(r["2020~2025"] <= -.3).mean() * 100:4.1f}% | 2011~19 +30% {(r["2011~2019"] >= .3).mean() * 100:4.1f}% | 2026 +30% {(r["2026"] >= .3).mean() * 100:4.1f}%')
+    # ② ③ 대표 설정: 순위 20일 · 월말까지 · k1 · 락30 · 손절10 · 추적10 · +폭락 (달력 달)
+    P('\n② 대표 설정 (순위 20일 · 월말까지 · k1 · 락30 · 손절10 · 추적10 · +폭락) — 달력 달 기준 (매달 첫 거래일에 시작, 20거래일)')
     months = {}
     for t in range(C.didx(F, '20110103'), T - 21):
         ym = str(F.dates[t])[:6]
         if ym not in months: months[ym] = t
-    rows = {ym: run_month(s, 'D20', 2, 10, mix=True) for ym, s in months.items()}
+    rows = {ym: run_month(s, 'D20', 1, 20, stop=0.10, mix=True, trail=0.10) for ym, s in months.items()}
     P('  연도  달수  +20%↑  +30%↑  −20%↓  평균   최고달')
     for y in range(2011, 2027):
         ys = {ym: v for ym, v in rows.items() if ym.startswith(str(y))}

@@ -141,7 +141,7 @@ def run_month(s, rule, k, lock=None, mix=None):
         if crash_now and not ov:                                   # 폭락 전환: 전량 종가 매도 → A 후보 종가 매수
             for j in list(pos): sell(j, t, c[t, j])
             nv = nav(t)
-            for j in CAND['A'][t][:k]: buy(j, t, c[t, j], 'A', nv / k, t + 5 + 1)
+            for j in CAND['A'][t][:k]: buy(j, t, c[t, j], 'A', nv / k, 6)
             ov = True
         else:
             if ov and not any(p[4] == 'A' for p in pos.values()): ov = False
@@ -153,12 +153,12 @@ def run_month(s, rule, k, lock=None, mix=None):
                 free = k - len(pos) - len(pend_open)
                 cands = [j for j in CAND[r['cand']][t] if j not in pos][:max(free, 0)]
                 if cands: entered_once = True
-                hold = r['hold'] if r['hold'] < 99 else (e - t)
+                hold = r['hold'] + 1 if r['hold'] < 99 else 99        # 보유 n일 = n+1 일째 시가 매도 (99 = 월말까지)
                 if r['entry'] == 'close':
                     nv = nav(t)
-                    for j in cands: buy(j, t, c[t, j], r['cand'], nv / k, min(t + hold + 1, e + 1))
+                    for j in cands: buy(j, t, c[t, j], r['cand'], nv / k, hold)
                 else:
-                    pend_open += [(j, r['cand'], min(hold, e - t)) for j in cands]
+                    pend_open += [(j, r['cand'], hold) for j in cands]
         nv = nav(t); peak_nav = max(peak_nav, nv)
         if lock and nv >= CAP * (1 + lock): locked = True
     for j in list(pos): sell(j, e, c[e, j])
