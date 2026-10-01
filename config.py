@@ -185,6 +185,7 @@ CT_CRASH_IDIO_MULT: float = _env_float("CT_CRASH_IDIO_MULT", 3.0)  # 종목 낙�
 CT_CRASH_HOLD: int = _env_int("CT_CRASH_HOLD", 5)                # 전환 보유 거래일
 CT_CRASH_MIN_N: int = _env_int("CT_CRASH_MIN_N", 100)           # 시장 평균을 믿으려면 현재가가 잡힌 종목이 이만큼은 돼야
 CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 월 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_BRIEF_N: int = _env_int("CT_BRIEF_N", 5)                      # 아침 브리핑에 보여줄 후보 수 (어제 종가 기준 모멘텀 상위)
 CT_BUY_TICKS: int = _env_int("CT_BUY_TICKS", 5)                  # 장마감 동시호가 매수 지정가 = 현재가 + N틱 (상한가 이내)
 CT_KOSPI_N: int = _env_int("CT_KOSPI_N", 200)                    # 대상: 코스피 시총 상위 N
 CT_KOSDAQ_N: int = _env_int("CT_KOSDAQ_N", 150)                  #       코스닥 시총 상위 N

@@ -147,6 +147,8 @@ def main() -> int:
     check("대상 = 코스피 6 + 코스닥 4", [u["ticker"] for u in uni] == ["100010", "100020", "100030", "100040", "100050", "100060", "200010", "200020", "200030", "200040"], str([u["ticker"] for u in uni]))
     check("일봉 캐시 생성", r["hist"] == 10 and len(ct["hist"]["100010"]["closes"]) == 45)
     check("월초 기준 순자산 기록 · 락 해제", ct["anchor"] == 100_000_000 and ct["locked"] is False and ct["month"] == date.today().strftime("%Y-%m"))
+    brief = SENT[-1]
+    check("아침 브리핑: 어제 종가 기준 상위 후보 + 순자산 (상한가는 아직 모르니 D 가 1위)", "아침 브리핑" in brief and "1. 상한가D" in brief and "2. 폭주A" in brief and "순자산" in brief, brief.replace("\n", " / "))
 
     print("── 판정 (모멘텀) ─────────────────────")
     snaps, fail = contest.snapshots(ct)

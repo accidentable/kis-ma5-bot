@@ -102,13 +102,43 @@ def prep(force: bool = False) -> dict:
         hist[s["ticker"]] = {"closes": [float(c["close"]) for c in candles], "values": [float(c.get("value", 0) or 0) for c in candles],
                              "date": candles[-1]["date"] if candles else ""}
     put(universe=uni, hist=hist, hist_date=_today())
-    msg = f"🧭 대회 모드 준비 {_today()} — 대상 {len(uni)}종목 (코스피 {sum(1 for s in uni if s['market'] == 'KOSPI')} · 코스닥 {sum(1 for s in uni if s['market'] == 'KOSDAQ')}), 일봉 {len(hist)}개"
-    if fail:
-        msg += f", 실패 {len(fail)}"
-    if ct.get("locked"):
-        msg += f"\n🔒 목표 달성 상태 ({ct.get('locked_date')}) — 이번 달은 현금 유지"
-    notify.send(msg)
+    notify.send(morning_brief(uni, hist, fail, ct))
     return {"universe": len(uni), "hist": len(hist), "fail": fail}
+
+
+def morning_brief(uni: list[dict], hist: dict, fail: list[str], ct: dict) -> str:
+    """08:20 브리핑: 어제 종가 기준 모멘텀 상위 CT_BRIEF_N (오늘 15:05 판정에서 바뀔 수 있다), 보유, 오늘 아침 매도 예정, 월초 대비."""
+    lines = [f"🌅 대회 모드 아침 브리핑 {_today()} — 대상 {len(uni)}종목 (코스피 {sum(1 for s in uni if s['market'] == 'KOSPI')} · 코스닥 {sum(1 for s in uni if s['market'] == 'KOSDAQ')})"
+             + (f", 일봉 실패 {len(fail)}" if fail else "")]
+    anchor = float(ct.get("anchor", 0) or 0)
+    try:
+        nav = _nav()
+        lines.append(f"💰 순자산 {nav:,.0f}원" + (f" | 월초 대비 {(nav / anchor - 1) * 100:+.2f}% (목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+    except Exception as e:
+        logger.warning("브리핑 잔고 조회 실패: %s", e)
+    if ct.get("locked"):
+        lines.append(f"🔒 목표 달성 상태 ({ct.get('locked_date')}) — 이번 달은 현금 유지, 매수 없음")
+    else:
+        snaps = []
+        for s in uni:
+            h = hist.get(s["ticker"]) or {}
+            c = list(h.get("closes") or [])
+            if len(c) < config.CT_LOOKBACK + 2 or c[-1] <= 0 or c[-2] <= 0:
+                continue
+            snaps.append(Snap(ticker=s["ticker"], name=s.get("name", ""), market=s.get("market", ""), price=c[-1], prev_close=c[-2],
+                              change_pct=(c[-1] / c[-2] - 1) * 100, upper_limit=0, lower_limit=0, value=0, closes=c[:-1], values=list(h.get("values") or [])[:-1]))
+        cands, st = rank_momentum(snaps)
+        held = {p["ticker"] for p in _positions()}
+        lines.append(f"📈 어제 종가 기준 {config.CT_LOOKBACK}일 모멘텀 상위 (15:05 판정 때 바뀔 수 있음, 컷 {st['cutoff'] * 100 if st.get('cutoff') is not None else 0:+.1f}%):")
+        for i, s_ in enumerate(cands[:config.CT_BRIEF_N], 1):
+            lines.append(f"  {i}. {s_.name}({s_.ticker}) {s_.ret_n * 100:+.1f}% · 어제 {s_.change_pct:+.1f}%" + (" ← 보유" if s_.ticker in held else ""))
+    pos = _positions()
+    if pos:
+        lines.append("📌 보유: " + ", ".join(f"{p.get('name', '')}({p['ticker']}) {p['qty']:,}주 [{p.get('kind')}] {_held_days(p)}일" for p in pos))
+    pend = ct.get("pending_exit") or []
+    if pend:
+        lines.append("🌅 오늘 08:45 시가 매도: " + ", ".join(f"{x['ticker']} ({x['reason']})" for x in pend))
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════
