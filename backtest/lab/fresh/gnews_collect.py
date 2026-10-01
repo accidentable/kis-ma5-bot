@@ -52,12 +52,13 @@ def prev_day(d):           # 달력 기준 하루 전 (주말 포함 — 금요�
 def fetch(name, d):
     q = f'"{name}" after:{prev_day(d)} before:{d[:4]}-{d[4:6]}-{d[6:]}'
     url = 'https://news.google.com/rss/search?q=' + urllib.parse.quote(q) + '&hl=ko&gl=KR&ceid=KR:ko'
-    backoff = [60, 120, 300, 600]
-    for k in range(5):
+    # 503/429 는 구글이 IP 를 잠시 막은 것 — 15분 쉬고 같은 사건을 다시 시도 (최대 6번 = 90분). 사건을 건너뛰면 표본이 비니 버티는 쪽.
+    backoff = [900, 900, 900, 900, 900, 900]
+    for k in range(6):
         try:
             r = sess.get(url, timeout=25)
         except requests.RequestException as e:
-            print(f'  네트워크 오류 {e}; {backoff[min(k, 3)]}초 대기', flush=True); time.sleep(backoff[min(k, 3)]); continue
+            print(f'  네트워크 오류 {e}; 120초 대기', flush=True); time.sleep(120); continue
         if r.status_code == 200:
             items = []
             for it in re.findall(r'<item>(.*?)</item>', r.text, re.S):
@@ -84,5 +85,5 @@ with open(OUT, 'a', encoding='utf-8') as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + '\n'); fh.flush(); n_new += 1
         if n_new % 50 == 0:
             print(f'  {n_new}건 받음 ({i + 1}/{len(ev)} 위치) {time.time() - t0:.0f}s — 마지막 {d} {name} {len(items)}건', flush=True)
-        time.sleep(1.0 + random.random() * 0.5)
+        time.sleep(3.0 + random.random() * 1.0)        # 1.5초 간격으론 800건쯤에서 503 이 왔다
 print(f'끝: 새로 {n_new}건, {time.time() - t0:.0f}s', flush=True)
