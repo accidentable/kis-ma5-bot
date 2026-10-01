@@ -50,9 +50,33 @@ def put(**fields) -> dict:
     return ct
 
 
+BUYC, SELLC = 0.00065, 0.00265        # 종이 계좌 비용 (수수료 0.015% + 슬리피지 0.05%, 매도엔 세금 0.2% 추가)
+
+
 def _nav() -> float:
+    """순자산. DRY_RUN 이면 종이 계좌(현금 + 보유 평가) — 실계좌 잔고로는 수량이 안 나온다."""
+    if config.DRY_RUN:
+        ct = get()
+        cash = float(ct.get("paper_cash", config.CT_PAPER_CAP) or 0)
+        val = 0.0
+        for p in _positions():
+            try:
+                val += int(p["qty"]) * float(quotes.get_price(p["ticker"])["price"])
+            except Exception:
+                val += int(p["qty"]) * float(p.get("entry_price", 0) or 0)
+        return cash + val
     bal = trading.get_balance()
     return float(max(bal["net_asset"], bal["cash"]))
+
+
+def _paper_buy(qty: int, price: float) -> None:
+    if config.DRY_RUN:
+        ct = get(); put(paper_cash=float(ct.get("paper_cash", config.CT_PAPER_CAP) or 0) - qty * price * (1 + BUYC))
+
+
+def _paper_sell(rec: dict | None) -> None:
+    if config.DRY_RUN and rec:
+        ct = get(); put(paper_cash=float(ct.get("paper_cash", config.CT_PAPER_CAP) or 0) + int(rec.get("sold_qty", 0) or 0) * float(rec.get("exit_price", 0) or 0) * (1 - SELLC))
 
 
 def _positions() -> list[dict]:
@@ -72,6 +96,8 @@ def _held_days(pos: dict) -> int:
 def _month_reset(ct: dict) -> dict:
     if ct.get("month") == _month():
         return ct
+    if config.DRY_RUN and "paper_cash" not in ct:
+        put(paper_cash=config.CT_PAPER_CAP)
     try:
         anchor = _nav()
     except Exception as e:
@@ -211,7 +237,7 @@ def scan(force: bool = False) -> dict:
         for p in _positions():
             rec = trader.exit_position(p, "폭락 전환 매도")
             if rec:
-                sold.append(rec)
+                _paper_sell(rec); sold.append(rec)
         plan["sold_now"] = [r["ticker"] for r in sold]
     put(plan=plan)
     notify.send(scan_text(plan, snaps_n=len(snaps), fail=len(fail)))
@@ -288,6 +314,8 @@ def buy_close(force: bool = False) -> dict:
             limit = min(limit, int(upper))
         if b["kind"] == "filler":
             qty = 1
+        elif config.DRY_RUN:
+            qty = int(budget // limit)
         else:
             try:
                 info = trading.get_buyable(b["ticker"], limit)
@@ -307,6 +335,7 @@ def buy_close(force: bool = False) -> dict:
                "filled": False, "dry_run": r.get("dry_run", False)}
         state.add_position(pos)
         state.mark_traded_today(b["ticker"])
+        _paper_buy(qty, limit)
         entered.append(pos)
     if any(p["kind"] == "filler" for p in entered):
         put(fillers_done=_month())
@@ -358,7 +387,7 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
         pending = [{"ticker": p["ticker"], "reason": f"목표 +{config.CT_LOCK_PCT:g}% 달성 락"} for p in _positions()]
         lines.append(f"🎯 목표 달성! 순자산 {nav:,.0f}원 (월초 {anchor:,.0f}원, {(nav / anchor - 1) * 100:+.1f}%) — 내일 시가 전량 매도 후 월말까지 현금")
     put(pending_exit=pending)
-    head = f"🏁 대회 모드 마감 {_today()}"
+    head = f"🏁 대회 모드 마감 {_today()}" + (" [종이 계좌]" if config.DRY_RUN else "")
     if nav is not None and anchor:
         head += f" — 순자산 {nav:,.0f}원 (월초 대비 {(nav / anchor - 1) * 100:+.2f}%, 목표 +{config.CT_LOCK_PCT:g}%)"
     if not lines:
@@ -393,6 +422,7 @@ def _sell_at_open(pos: dict, reason: str) -> dict | None:
         return None
     rec = state.close_position(pos["ticker"], float(q["prev_close"] or q["price"]), reason, qty=qty)
     state.mark_traded_today(pos["ticker"])
+    _paper_sell(rec)
     return rec
 
 
@@ -431,7 +461,7 @@ def check_open(force: bool = False) -> dict:
         if p["ticker"] in left:
             rec = trader.exit_position(p, left[p["ticker"]])
             if rec:
-                sold.append(rec)
+                _paper_sell(rec); sold.append(rec)
     put(pending_exit=[{"ticker": t, "reason": r} for t, r in left.items() if t not in {s["ticker"] for s in sold}])
     return {"sold": sold}
 

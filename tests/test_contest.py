@@ -166,7 +166,8 @@ def main() -> int:
     contest.put(plan=plan)
     r = contest.buy_close(force=True)
     pos = {p["ticker"]: p for p in contest._positions()}
-    check("폭주A 매수: 순자산 99.5% / 1슬롯 ÷ (현재가+5틱)", "100010" in pos and pos["100010"]["qty"] == int(100_000_000 * 0.995 // pos["100010"]["entry_price"]), str(pos.get("100010")))
+    check("폭주A 매수: 종이 1억 × 99.5% / 1슬롯 ÷ (현재가+5틱)", "100010" in pos and pos["100010"]["qty"] == int(100_000_000 * 0.995 // pos["100010"]["entry_price"]), str(pos.get("100010")))
+    check("종이 현금 차감", contest.get()["paper_cash"] < 100_000_000 - pos["100010"]["qty"] * pos["100010"]["entry_price"] + 1, str(contest.get()["paper_cash"]))
     check("매수 지정가 = 현재가 + 5틱 (14,500 → 14,550, 호가 10원)", pos.get("100010", {}).get("entry_price") == 14_550, str(pos.get("100010", {}).get("entry_price")))
     check("조건용 1주 2종목", all(pos[t]["qty"] == 1 and pos[t]["kind"] == "filler" for t in ("100020", "100030")))
     check("조건용 거래는 달에 한 번 표시", contest.get().get("fillers_done") == date.today().strftime("%Y-%m"))
@@ -205,9 +206,9 @@ def main() -> int:
     print("── 목표 락 ─────────────────────────────")
     PRICE["100010"] = 14_500
     contest.put(plan=contest.decide(contest.snapshots(contest.get())[0], contest.get())); contest.buy_close(force=True)
-    NAV["v"] = 132_000_000
+    PRICE["100010"] = 14_550 * 1.33                 # 종이 계좌: 보유 +33% → 순자산 약 +32.8%
     r = contest.evaluate(force=True, send_report=False)
-    check("순자산 +32% → 락, 전량 매도 예정", r["locked"] and r["pending"] and "락" in r["pending"][0]["reason"], str(r))
+    check("종이 순자산 +32% → 락, 전량 매도 예정", r["locked"] and r["pending"] and "락" in r["pending"][0]["reason"], str(r))
     plan = contest.decide(contest.snapshots(contest.get())[0], contest.get())
     check("락 상태면 판정 = locked, 매수 없음", plan["mode"] == "locked" and not plan["buy"])
     ORDERS.clear(); contest.sell_open(force=True)
@@ -216,10 +217,10 @@ def main() -> int:
 
     print("── 월초 리셋 ────────────────────────────")
     contest.put(month="2000-01")
-    NAV["v"] = 132_000_000
     contest.prep(force=True)
     ct = contest.get()
-    check("새 달: 기준 순자산 = 지금 순자산, 락 해제, 조건용 리셋", ct["anchor"] == 132_000_000 and not ct["locked"] and ct["fillers_done"] == "")
+    check("새 달: 기준 순자산 = 지금 종이 순자산(락 매도 뒤 현금), 락 해제, 조건용 리셋", abs(ct["anchor"] - ct["paper_cash"]) < 1 and ct["anchor"] > 125_000_000 and not ct["locked"] and ct["fillers_done"] == "", str(ct["anchor"]))
+    contest.put(paper_cash=100_000_000.0, anchor=100_000_000.0)
 
     print("── 폭락 전환 ────────────────────────────")
     NAV["v"] = 100_000_000

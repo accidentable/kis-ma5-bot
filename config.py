@@ -2,12 +2,12 @@
 config.py — 환경변수 로드 + 전략 파라미터
 
 전략은 STRATEGY 로 고른다.
-  near_high (기본)  52주 신고가 근접 로테이션
+  near_high         52주 신고가 근접 로테이션
                     코스피+코스닥 시총 상위 200 중 '전일 종가 / 250일 최고가' 가 가장 높은 2종목을
                     반반 사서 21거래일 들고, 21거래일마다 다시 골라 교체한다. 손절·익절 없음.
                     근거: backtest/results/strategy_report5_*.md (KRX 전종목 16년, 상장폐지 포함)
   closebet          종가 베팅 (선택형): 강세 마감 테마주를 종가에 사서 다음 날 시가에 판다 — 검증 미통과
-  contest           대회 모드: 20일 모멘텀 1위 1종목 집중 + 손절·추적 + 목표 락 — 한 달 +30% 확률 최대화 (contest_tail_20261002.md)
+  contest (기본)    대회 모드: 20일 모멘텀 1위 1종목 집중 + 손절·추적 + 목표 락 — 한 달 +30% 확률 최대화 (contest_tail_20261002.md)
   ma5               예전 MA5 돌파 역발상 (5일선 아래 → 위 돌파 매수, 익절 | 5일선 이탈 | 3거래일)
 """
 from __future__ import annotations
@@ -103,7 +103,7 @@ TELEGRAM_ALLOWED_CHAT_IDS: list[int] = [
 # ══════════════════════════════════════════════════════════════
 # 전략 선택
 # ══════════════════════════════════════════════════════════════
-STRATEGY: str = os.getenv("STRATEGY", "near_high").strip().lower()
+STRATEGY: str = os.getenv("STRATEGY", "contest").strip().lower()   # 2026-10 부터 기본은 대회 모드. 신고가 로테이션은 STRATEGY=near_high
 
 # ── 52주 신고가 근접 로테이션 (STRATEGY=near_high) ─────────────
 NH_UNIVERSE_TOP: int = _env_int("NH_UNIVERSE_TOP", 200)        # 코스피+코스닥 시총 상위 N
@@ -185,6 +185,7 @@ CT_CRASH_IDIO_MULT: float = _env_float("CT_CRASH_IDIO_MULT", 3.0)  # 종목 낙�
 CT_CRASH_HOLD: int = _env_int("CT_CRASH_HOLD", 5)                # 전환 보유 거래일
 CT_CRASH_MIN_N: int = _env_int("CT_CRASH_MIN_N", 100)           # 시장 평균을 믿으려면 현재가가 잡힌 종목이 이만큼은 돼야
 CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 월 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_PAPER_CAP: float = _env_float("CT_PAPER_CAP", 100_000_000)   # DRY_RUN 일 때 수량·순자산 계산에 쓰는 종이 계좌 (실계좌 잔고 대신)
 CT_BRIEF_N: int = _env_int("CT_BRIEF_N", 5)                      # 아침 브리핑에 보여줄 후보 수 (어제 종가 기준 모멘텀 상위)
 CT_BUY_TICKS: int = _env_int("CT_BUY_TICKS", 5)                  # 장마감 동시호가 매수 지정가 = 현재가 + N틱 (상한가 이내)
 CT_KOSPI_N: int = _env_int("CT_KOSPI_N", 200)                    # 대상: 코스피 시총 상위 N
