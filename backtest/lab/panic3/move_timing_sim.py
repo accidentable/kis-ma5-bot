@@ -110,4 +110,4 @@ for name, s, k, kind, H in RULES:
     print(row, flush=True)
 
 import json
-json.dump(out, open('backtest/results/lab_move_timing_sim.json', 'w'), ensure_ascii=False, indent=1)
+json.dump(out, open('backtest/results/lab_move_timing_sim.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)

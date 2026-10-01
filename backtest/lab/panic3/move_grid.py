@@ -52,4 +52,4 @@ for pn, (a, b) in PER.items():
         P(row)
 txt = '\n'.join(lines)
 print('\n\n' + txt)
-open('backtest/results/lab_move_grid.md', 'w').write('# 큰 범주 격자 (move_grid.py)\n\n```\n' + txt + '\n```\n')
+open('backtest/results/lab_move_grid.md', 'w', encoding='utf-8').write('# 큰 범주 격자 (move_grid.py)\n\n```\n' + txt + '\n```\n')

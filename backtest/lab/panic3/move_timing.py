@@ -100,4 +100,4 @@ for sname, s in SIG.items():
 
 import json, os
 os.makedirs('backtest/results', exist_ok=True)
-json.dump(rows, open('backtest/results/lab_move_timing.json', 'w'), ensure_ascii=False, indent=1)
+json.dump(rows, open('backtest/results/lab_move_timing.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)

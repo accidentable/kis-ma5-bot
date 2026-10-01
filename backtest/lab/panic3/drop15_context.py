@@ -205,4 +205,4 @@ for lb, m in cut(X['r60'], [-9, -0.10, 0.10, 0.30, 99], ['하락', '횡보', '�
 
 txt = '\n'.join(lines)
 print(txt)
-open('backtest/results/lab_drop15_context.md', 'w').write('# 이틀 −15% 급락 종목 — 상황별 (drop15_context.py)\n\n```\n' + txt + '\n```\n')
+open('backtest/results/lab_drop15_context.md', 'w', encoding='utf-8').write('# 이틀 −15% 급락 종목 — 상황별 (drop15_context.py)\n\n```\n' + txt + '\n```\n')
