@@ -16,9 +16,10 @@ def make_runner(D, cands: dict, crash_list=None, buyc=0.003, sellc=0.003, cap=1e
     o, c, cf, tr, T = D.o, D.c, D.cf, D.tr, D.T
     crash = D.crash
 
-    def run_month(s, cand, k=1, hold=10, stop=0.10, trail=0.10, lock=0.30, mix=False, buy_at='close', signal_only=False):
+    def run_month(s, cand, k=1, hold=10, stop=0.10, trail=0.10, lock=0.30, mix=False, buy_at='close', signal_only=False, max_entries=None):
         e = s + W - 1
         cash, pos, sell_open, pend_buy, locked, ov = cap, {}, set(), [], False, False
+        entries = 0  # max_entries: 한 달 매수 횟수 상한 (손절 뒤 재진입 제한용)
         peak_nav = cap
 
         def nav(t): return cash + sum(p[0] * cf[t, j] * (1 - sellc) for j, p in pos.items())
@@ -29,11 +30,12 @@ def make_runner(D, cands: dict, crash_list=None, buyc=0.003, sellc=0.003, cap=1e
             cash += pos.pop(j)[0] * px * (1 - sellc); return True
 
         def buy(j, t, px, kind, budget, hold_):
-            nonlocal cash
+            nonlocal cash, entries
             if j in pos or not tr[t, j] or not px > 0: return False
+            if max_entries is not None and entries >= max_entries: return False
             q = np.floor(min(budget, cash) / (px * (1 + buyc)))
             if q < 1: return False
-            cash -= q * px * (1 + buyc); pos[j] = [q, px, px, t + hold_, kind]; return True
+            cash -= q * px * (1 + buyc); pos[j] = [q, px, px, t + hold_, kind]; entries += 1; return True
 
         for t in range(s, e + 1):
             for j in list(sell_open): sell(j, t, o[t, j])
