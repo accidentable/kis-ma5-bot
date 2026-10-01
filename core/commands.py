@@ -30,6 +30,9 @@ HELP = """자동매매 봇 (/config 로 전략 확인)
 
 
 def _cmd_status() -> str:
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        return contest.status_text()
     if config.STRATEGY == "closebet":
         from jobs import closebet
         return closebet.status_text()
@@ -76,6 +79,13 @@ def _cmd_status() -> str:
 
 
 def _cmd_scan() -> str:
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        ct = contest.get()
+        if not ct.get("hist"):
+            return "일봉 캐시가 아직 없다 — 08:20 준비 작업이 만든다 (cli prep)."
+        snaps, fail = contest.snapshots(ct)
+        return contest.scan_text(contest.decide(snaps, ct), snaps_n=len(snaps), fail=len(fail))
     if config.STRATEGY == "closebet":
         from jobs import closebet
         cands, stats = closebet.candidates()

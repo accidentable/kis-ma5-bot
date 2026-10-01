@@ -7,6 +7,7 @@ config.py — 환경변수 로드 + 전략 파라미터
                     반반 사서 21거래일 들고, 21거래일마다 다시 골라 교체한다. 손절·익절 없음.
                     근거: backtest/results/strategy_report5_*.md (KRX 전종목 16년, 상장폐지 포함)
   closebet          종가 베팅 (선택형): 강세 마감 테마주를 종가에 사서 다음 날 시가에 판다 — 검증 미통과
+  contest           대회 모드: 20일 모멘텀 1위 1종목 집중 + 손절·추적 + 목표 락 — 한 달 +30% 확률 최대화 (contest_tail_20261002.md)
   ma5               예전 MA5 돌파 역발상 (5일선 아래 → 위 돌파 매수, 익절 | 5일선 이탈 | 3거래일)
 """
 from __future__ import annotations
@@ -164,6 +165,36 @@ CB_BUY_TICKS: int = _env_int("CB_BUY_TICKS", 5)                 # 장마감 동�
 CB_SELL_TIME: str = os.getenv("CB_SELL_TIME", "0845").strip()   # 장전 동시호가 매도
 CB_CHECK_TIME: str = os.getenv("CB_CHECK_TIME", "0905").strip() # 안 팔린 것 현재가 매도
 CB_BUY_TIME: str = os.getenv("CB_BUY_TIME", "1521").strip()     # 장마감 동시호가(15:20~15:30) 매수
+
+# ── 대회 모드 (STRATEGY=contest) ─────────────────────────────
+# 한 달 안에 +CT_LOCK_PCT% 를 한 번 찍을 확률을 노린다 (평균 수익이 아니다). 근거 backtest/results/contest_tail_20261002.md:
+# 20일 모멘텀 1위 1종목 · 손절 10% · 추적 10% · 보유 10일 · 목표 락 30% → 2020~25 월 +30% 확률 29%, −20% 확률 22%.
+CT_SLOTS: int = _env_int("CT_SLOTS", 1)                          # 동시에 드는 종목 수 (1 이 꼬리 확률 최대, 2 면 −30% 위험 절반)
+CT_LOOKBACK: int = _env_int("CT_LOOKBACK", 20)                   # 순위에 쓰는 수익률 기간 (거래일)
+CT_TOP_PCT: float = _env_float("CT_TOP_PCT", 10.0)               # 대상 중 상위 몇 % 안에서 고르나
+CT_STOP_PCT: float = _env_float("CT_STOP_PCT", 10.0)             # 손절 (종가 기준 → 다음 날 시가)
+CT_TRAIL_PCT: float = _env_float("CT_TRAIL_PCT", 10.0)           # 추적 손절 (보유 중 최고 종가 대비)
+CT_HOLD_DAYS: int = _env_int("CT_HOLD_DAYS", 10)                 # 최대 보유 거래일, 지나면 다음 날 시가 매도 후 1위로 교체
+CT_LOCK_PCT: float = _env_float("CT_LOCK_PCT", 30.0)             # 월초 순자산 대비 이만큼 넘으면 전량 매도 후 월말까지 현금
+CT_CRASH_ENABLED: bool = _env_bool("CT_CRASH_ENABLED", True)     # 폭락일 급락주 전환
+CT_CRASH_MKT_PCT: float = _env_float("CT_CRASH_MKT_PCT", 3.0)    # 대상 평균 등락 −N% 이하
+CT_CRASH_SIGMA: float = _env_float("CT_CRASH_SIGMA", 3.0)        # 그리고 직전 20일 시장 변동성의 N 배 이하
+CT_CRASH_DROP_PCT: float = _env_float("CT_CRASH_DROP_PCT", 7.0)  # 급락주 후보: 오늘 −N% 이하
+CT_CRASH_VR_MAX: float = _env_float("CT_CRASH_VR_MAX", 3.0)      # 거래대금이 20일 평균의 N 배 이상이면 제외 (뉴스 의심)
+CT_CRASH_IDIO_MULT: float = _env_float("CT_CRASH_IDIO_MULT", 3.0)  # 종목 낙폭이 시장 낙폭의 N 배 이상이면 제외 (혼자 빠짐)
+CT_CRASH_HOLD: int = _env_int("CT_CRASH_HOLD", 5)                # 전환 보유 거래일
+CT_CRASH_MIN_N: int = _env_int("CT_CRASH_MIN_N", 100)           # 시장 평균을 믿으려면 현재가가 잡힌 종목이 이만큼은 돼야
+CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 월 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_BUY_TICKS: int = _env_int("CT_BUY_TICKS", 5)                  # 장마감 동시호가 매수 지정가 = 현재가 + N틱 (상한가 이내)
+CT_KOSPI_N: int = _env_int("CT_KOSPI_N", 200)                    # 대상: 코스피 시총 상위 N
+CT_KOSDAQ_N: int = _env_int("CT_KOSDAQ_N", 150)                  #       코스닥 시총 상위 N
+CT_UNIVERSE_PULL: int = _env_int("CT_UNIVERSE_PULL", 1500)       # 둘을 뽑기 위해 받는 시총 상위 수
+CT_PREP_TIME: str = os.getenv("CT_PREP_TIME", "0820").strip()    # 일봉 캐시 (350종목, 2~3분)
+CT_SELL_TIME: str = os.getenv("CT_SELL_TIME", "0845").strip()    # 장전 동시호가 매도
+CT_CHECK_TIME: str = os.getenv("CT_CHECK_TIME", "0905").strip()  # 안 팔린 것 현재가 매도
+CT_SCAN_TIME: str = os.getenv("CT_SCAN_TIME", "1505").strip()    # 판정 (현재가 350개, 2~3분)
+CT_BUY_TIME: str = os.getenv("CT_BUY_TIME", "1520").strip()      # 장마감 동시호가 매수
+CT_EVAL_TIME: str = os.getenv("CT_EVAL_TIME", "1540").strip()    # 종가 판정 · 리포트
 
 # ══════════════════════════════════════════════════════════════
 # 유니버스 (STRATEGY=ma5)
@@ -344,8 +375,10 @@ def validate() -> list[str]:
         problems.append(f"POSITION_PCT 는 0 초과 100 이하: {POSITION_PCT}")
     if BELOW_MIN_DAYS > BELOW_LOOKBACK:
         problems.append("BELOW_MIN_DAYS 가 BELOW_LOOKBACK 보다 클 수 없다")
-    if STRATEGY not in ("near_high", "ma5", "closebet"):
-        problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/closebet/ma5)")
+    if STRATEGY not in ("near_high", "ma5", "closebet", "contest"):
+        problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/closebet/contest/ma5)")
+    if CT_SLOTS < 1 or CT_LOCK_PCT <= 0 or CT_LOOKBACK < 5:
+        problems.append("CT_SLOTS ≥ 1, CT_LOCK_PCT > 0, CT_LOOKBACK ≥ 5")
     if NH_SLOTS < 1 or NH_HOLD_DAYS < 1:
         problems.append("NH_SLOTS, NH_HOLD_DAYS 는 1 이상")
     if PANIC_ENABLED and STRATEGY != "near_high":
@@ -360,6 +393,16 @@ def summary() -> str:
     """현재 설정 요약 (텔레그램/로그용)."""
     env = "모의투자" if IS_MOCK else "실전"
     mode = f"{env} · " + ("주문 안 보냄(DRY_RUN)" if DRY_RUN else "주문 전송")
+    if STRATEGY == "contest":
+        return (
+            f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
+            f"전략: 대회 모드 — 한 달 +{CT_LOCK_PCT:g}% 한 번 노리기 (평균 아님)\n"
+            f"대상: 코스피 시총 {CT_KOSPI_N} + 코스닥 시총 {CT_KOSDAQ_N} | {CT_LOOKBACK}일 수익률 상위 {CT_TOP_PCT:g}% 중 1위 {CT_SLOTS}종목\n"
+            f"매수: {CT_BUY_TIME[:2]}:{CT_BUY_TIME[2:]} 장마감 동시호가 | 매도: 손절 {CT_STOP_PCT:g}% · 추적 {CT_TRAIL_PCT:g}% · 보유 {CT_HOLD_DAYS}일 → 다음 날 시가\n"
+            f"목표 락: 월초 대비 +{CT_LOCK_PCT:g}% 면 전량 매도 후 월말까지 현금"
+            + (f" | 폭락 전환: 시장 −{CT_CRASH_MKT_PCT:g}% & {CT_CRASH_SIGMA:g}σ → 급락주 {CT_CRASH_HOLD}일" if CT_CRASH_ENABLED else "")
+            + (f" | 조건용 1주 {CT_FILLER_N}종목" if CT_FILLER_N else "")
+        )
     if STRATEGY == "closebet":
         return (
             f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"

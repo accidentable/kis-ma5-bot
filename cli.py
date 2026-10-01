@@ -242,6 +242,14 @@ def cmd_universe(args) -> int:
 def cmd_scan(args) -> int:
     """수동 스캔. 항상 일봉을 새로 받는다 — 당일 캐시가 옛 코드로 만들어졌을 수 있다."""
     import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        ct = contest.get()
+        if ct.get("hist_date") != date.today().isoformat():
+            contest.prep(force=True); ct = contest.get()
+        snaps, fail = contest.snapshots(ct)
+        print(contest.scan_text(contest.decide(snaps, ct), snaps_n=len(snaps), fail=len(fail)))
+        return 0
     if config.STRATEGY == "closebet":
         from jobs import closebet
         cands, stats = closebet.candidates()
@@ -263,6 +271,10 @@ def cmd_scan(args) -> int:
 
 def cmd_prep(args) -> int:
     import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.prep(force=args.force))
+        return 0
     if config.STRATEGY == "closebet":
         from jobs import closebet
         print(closebet.sell_open(force=args.force))
@@ -278,6 +290,10 @@ def cmd_prep(args) -> int:
 
 def cmd_entry(args) -> int:
     import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.buy_close(force=args.force))
+        return 0
     if config.STRATEGY == "closebet":
         from jobs import closebet
         print(closebet.buy_close(force=args.force))
@@ -293,6 +309,10 @@ def cmd_entry(args) -> int:
 
 def cmd_monitor(args) -> int:
     import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.check_open(force=args.force))
+        return 0
     if config.STRATEGY == "closebet":
         from jobs import closebet
         print(closebet.check_open(force=args.force))
@@ -306,8 +326,27 @@ def cmd_monitor(args) -> int:
     return 0
 
 
+def cmd_sellopen(args) -> int:
+    """08:45 장전 동시호가 매도 1회 (대회 모드 · 종가 베팅)."""
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.sell_open(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.sell_open(force=args.force))
+        return 0
+    print("이 전략엔 장전 매도 작업이 없다")
+    return 1
+
+
 def cmd_close(args) -> int:
     import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.evaluate(force=args.force))
+        return 0
     if config.STRATEGY == "closebet":
         from jobs import closebet
         print(closebet.report(force=args.force))
@@ -434,6 +473,17 @@ def cmd_serve(args) -> int:
             h, mi = _hm(hhmm)
             sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
                           id=job_id, replace_existing=True)
+    elif config.STRATEGY == "contest":
+        from jobs import contest
+        for job_id, name, fn, hhmm in (("ct_prep", "대회 준비", contest.prep, config.CT_PREP_TIME),
+                                        ("ct_sell", "시가 매도", contest.sell_open, config.CT_SELL_TIME),
+                                        ("ct_check", "시가 미체결 점검", contest.check_open, config.CT_CHECK_TIME),
+                                        ("ct_scan", "판정", contest.scan, config.CT_SCAN_TIME),
+                                        ("ct_buy", "종가 매수", contest.buy_close, config.CT_BUY_TIME),
+                                        ("ct_eval", "마감 판정", contest.evaluate, config.CT_EVAL_TIME)):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
     elif config.STRATEGY == "near_high":
         from jobs import rotation
         for job_id, name, fn, hhmm in (("prep", "순위 계산", rotation.prep, config.NH_PREP_TIME),
@@ -514,6 +564,7 @@ def main() -> int:
         ("monitor", cmd_monitor, "장중 감시 1회"),
         ("close", cmd_close, "마감 정리 1회"),
         ("panic", cmd_panic, "시장 급락 판정 1회 (패닉 모드)"),
+        ("sellopen", cmd_sellopen, "장전 동시호가 매도 1회 (대회 · 종가 베팅)"),
         ("status", cmd_status, "보유 현황"),
         ("serve", cmd_serve, "스케줄러 상주 실행"),
     ]:
