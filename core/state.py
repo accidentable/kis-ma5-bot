@@ -33,12 +33,16 @@ _DEFAULT: dict[str, Any] = {
 }
 
 _lock = threading.Lock()
-_DDB_KEY = {"pk": "state"}
+
+
+# 실전/모의 보유 상태를 섞지 않도록 모의투자는 따로 저장한다.
+def _ddb_key() -> dict:
+    return {"pk": "state-mock" if config.IS_MOCK else "state"}
 
 
 def _file_path() -> str:
     os.makedirs(config.DATA_DIR, exist_ok=True)
-    return os.path.join(config.DATA_DIR, "state.json")
+    return os.path.join(config.DATA_DIR, "state_mock.json" if config.IS_MOCK else "state.json")
 
 
 def _read() -> dict:
@@ -46,7 +50,7 @@ def _read() -> dict:
         try:
             import boto3
             table = boto3.resource("dynamodb", region_name=config.AWS_REGION).Table(config.DYNAMODB_TABLE)
-            item = table.get_item(Key=_DDB_KEY).get("Item")
+            item = table.get_item(Key=_ddb_key()).get("Item")
             if item and "payload" in item:
                 return json.loads(item["payload"])
         except Exception as e:
@@ -68,7 +72,7 @@ def _write(data: dict) -> None:
         try:
             import boto3
             table = boto3.resource("dynamodb", region_name=config.AWS_REGION).Table(config.DYNAMODB_TABLE)
-            table.put_item(Item={**_DDB_KEY, "payload": payload})
+            table.put_item(Item={**_ddb_key(), "payload": payload})
             return
         except Exception as e:
             logger.error("DynamoDB 상태 저장 실패: %s", e)

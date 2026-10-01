@@ -247,6 +247,9 @@ cp .env.example .env
 `.env` 에 한투 실전 APP_KEY / APP_SECRET / 계좌번호 10자리와 텔레그램 토큰을 채운다.
 **`DRY_RUN=true` 는 그대로 둔다.**
 
+모의투자 계좌로 돌리려면 `KIS_ENV=mock` 으로 바꾸고 `KIS_MOCK_APP_KEY` / `KIS_MOCK_APP_SECRET` /
+`KIS_MOCK_ACCOUNT_NO` 를 채운다 (아래 [모의투자](#모의투자-kis_envmock) 참고).
+
 ### 2. 연결 점검
 
 ```bash
@@ -435,8 +438,30 @@ python cli.py chatid
 
 - 토큰은 24시간 유효하고 **재발급은 1분에 1회로 제한**된다. 여러 람다가 각자 발급하면
   제한에 걸리므로 SSM 으로 캐시를 공유한다.
-- 유량제한은 실전 계좌 기준 초당 20건(조회), 주문은 초당 1건.
-  `KIS_RATE_LIMIT_PER_SEC` 기본값은 8로 여유를 뒀다.
+- 유량제한은 실전 계좌 기준 초당 20건(조회), 주문은 초당 1건. 실제로는 더 빡빡하게 걸려서
+  `KIS_RATE_LIMIT_PER_SEC` 기본값은 실전 2.5, 모의 1.5 로 잡았다. 유량 오류가 나면 클라이언트가 스스로 더 낮춘다.
+
+### 모의투자 (KIS_ENV=mock)
+
+`KIS_ENV=mock` 이면 `KIS_MOCK_*` 키·계좌와 모의 주소 `https://openapivts.koreainvestment.com:29443` 를 쓴다.
+`python cli.py check` 첫 줄에 지금 환경과 주소가 나온다.
+
+| 기능 | 실전 TR_ID | 모의 TR_ID |
+|---|---|---|
+| 매수 / 매도 | TTTC0012U / TTTC0011U | VTTC0012U / VTTC0011U |
+| 정정·취소 | TTTC0013U | VTTC0013U |
+| 잔고 | TTTC8434R | VTTC8434R |
+| 매수가능 | TTTC8908R | VTTC8908R |
+| 일별 체결 | TTTC0081R | VTTC0081R |
+| 미체결 (정정취소가능주문) | TTTC0084R | 미지원 → VTTC0081R 결과에서 남은 수량으로 계산 |
+| 휴장일 | CTCA0903R | 미지원 → 지난날은 삼성전자 일봉 유무, 오늘은 평일 여부 |
+| 시세 · 일봉 · 업종 지수 · 거래대금 순위 | 같은 TR_ID | 같은 TR_ID |
+
+- 토큰 캐시(`kis_token_mock.json`, SSM `/ma5-bot/kis/token-mock`)와 봇 상태(`state_mock.json`, DynamoDB `pk=state-mock`)는
+  실전과 따로 둔다. 실전 ↔ 모의를 바꿔도 서로의 토큰이나 보유 기록을 쓰지 않는다.
+- 모의에서 지원 안 하는 실전 TR 을 부르면 `NotImplementedError` 로 막는다.
+- 모의는 평일 공휴일을 미리 못 거른다. 그날은 주문이 거부되고 끝난다.
+- 출처: 한투 [open-trading-api](https://github.com/koreainvestment/open-trading-api) `examples_llm/domestic_stock/*`.
 
 ---
 

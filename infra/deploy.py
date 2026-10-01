@@ -123,7 +123,11 @@ def bootstrap() -> None:
             {
                 "Effect": "Allow",
                 "Action": ["ssm:GetParameter", "ssm:PutParameter"],
-                "Resource": f"arn:aws:ssm:{config.AWS_REGION}:{acct}:parameter{config.SSM_TOKEN_PATH}",
+                # 실전·모의 토큰 둘 다 (KIS_ENV 를 바꿔도 정책을 다시 안 걸어도 되게)
+                "Resource": [
+                    f"arn:aws:ssm:{config.AWS_REGION}:{acct}:parameter/ma5-bot/kis/token",
+                    f"arn:aws:ssm:{config.AWS_REGION}:{acct}:parameter/ma5-bot/kis/token-mock",
+                ],
             },
         ],
     }
@@ -207,10 +211,13 @@ def package() -> None:
 
 
 def _env_vars() -> dict:
+    # config.KIS_APP_KEY 등은 지금 KIS_ENV 에 맞는 값이라, 같은 환경 이름(KIS_ / KIS_MOCK_)으로 넘긴다
+    prefix = "KIS_MOCK_" if config.IS_MOCK else "KIS_"
     return {
-        "KIS_APP_KEY": config.KIS_APP_KEY,
-        "KIS_APP_SECRET": config.KIS_APP_SECRET,
-        "KIS_ACCOUNT_NO": config.KIS_ACCOUNT_NO,
+        "KIS_ENV": config.KIS_ENV,
+        f"{prefix}APP_KEY": config.KIS_APP_KEY,
+        f"{prefix}APP_SECRET": config.KIS_APP_SECRET,
+        f"{prefix}ACCOUNT_NO": config.KIS_ACCOUNT_NO,
         "EXCG_ID_DVSN_CD": config.EXCG_ID_DVSN_CD,
         "TELEGRAM_BOT_TOKEN": config.TELEGRAM_BOT_TOKEN,
         "TELEGRAM_ALLOWED_CHAT_IDS": ",".join(str(x) for x in config.TELEGRAM_ALLOWED_CHAT_IDS),

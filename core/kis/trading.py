@@ -7,6 +7,11 @@ core/kis/trading.py — 주문 / 계좌
   정정/취소 TTTC0013U   (구 TTTC0803U)
   미체결    TTTC0084R   (구 TTTC8036R)
 주문 body 에 EXCG_ID_DVSN_CD(거래소ID구분코드)가 필수로 추가됐다.
+
+모의투자(KIS_ENV=mock)는 TR_ID 앞 글자가 V 다 (TTTC0012U → VTTC0012U).
+정정취소가능주문조회(TTTC0084R)는 모의투자에서 지원하지 않아서,
+모의에서는 일별주문체결조회(VTTC0081R)의 미체결분(CCLD_DVSN=02)으로 대신한다.
+TR_ID 출처: 한투 open-trading-api examples_llm/domestic_stock/*.
 """
 from __future__ import annotations
 
@@ -26,6 +31,25 @@ TR_BALANCE = "TTTC8434R"
 TR_PENDING = "TTTC0084R"
 TR_BUYABLE = "TTTC8908R"
 TR_DAILY_CCLD = "TTTC0081R"
+
+# 실전 TR_ID → 모의 TR_ID. 여기 없는 실전 TR 은 모의에서 부르면 막는다.
+_MOCK_TR = {
+    TR_BUY: "VTTC0012U",
+    TR_SELL: "VTTC0011U",
+    TR_REVISE_CANCEL: "VTTC0013U",
+    TR_BALANCE: "VTTC8434R",
+    TR_BUYABLE: "VTTC8908R",
+    TR_DAILY_CCLD: "VTTC0081R",
+}
+
+
+def tr(real_id: str) -> str:
+    """현재 환경(KIS_ENV)에 맞는 TR_ID."""
+    if not config.IS_MOCK:
+        return real_id
+    if real_id not in _MOCK_TR:
+        raise NotImplementedError(f"{real_id} 는 모의투자에서 지원하지 않는 API 다")
+    return _MOCK_TR[real_id]
 
 _PATH_ORDER = "/uapi/domestic-stock/v1/trading/order-cash"
 _PATH_RVSECNCL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
@@ -90,7 +114,7 @@ def place_order(ticker: str, qty: int, price: int, side: str, *, market: bool = 
     logger.info("%s 주문 전송: %s %d주 %s", label, ticker, qty, kind)
     data = client.post(
         _PATH_ORDER,
-        TR_BUY if side == "buy" else TR_SELL,
+        tr(TR_BUY if side == "buy" else TR_SELL),
         body,
         use_hashkey=True,
         is_order=True,
@@ -133,7 +157,7 @@ def cancel_order(order_no: str, org_no: str, qty: int, *, order_dvsn: str = conf
         "QTY_ALL_ORD_YN": "Y",
         "EXCG_ID_DVSN_CD": config.EXCG_ID_DVSN_CD,
     }
-    data = client.post(_PATH_RVSECNCL, TR_REVISE_CANCEL, body, use_hashkey=True, is_order=True)
+    data = client.post(_PATH_RVSECNCL, tr(TR_REVISE_CANCEL), body, use_hashkey=True, is_order=True)
     return {
         "success": True,
         "order_no": str((data.get("output") or {}).get("ODNO", "")).strip() or order_no,
@@ -158,7 +182,7 @@ def get_balance() -> dict:
         "CTX_AREA_FK100": "",
         "CTX_AREA_NK100": "",
     }
-    data = client.get(_PATH_BALANCE, TR_BALANCE, params)
+    data = client.get(_PATH_BALANCE, tr(TR_BALANCE), params)
 
     holdings = []
     for row in data.get("output1") or []:
@@ -203,7 +227,7 @@ def get_buyable(ticker: str, price: int) -> dict:
         "CMA_EVLU_AMT_ICLD_YN": "N",
         "OVRS_ICLD_YN": "N",
     }
-    data = client.get(_PATH_BUYABLE, TR_BUYABLE, params)
+    data = client.get(_PATH_BUYABLE, tr(TR_BUYABLE), params)
     o = data.get("output", {}) or {}
     return {
         "cash": _f(o.get("ord_psbl_cash")),
@@ -216,6 +240,8 @@ def get_buyable(ticker: str, price: int) -> dict:
 
 def get_pending_orders() -> list[dict]:
     """정정·취소 가능한 미체결 주문."""
+    if config.IS_MOCK:
+        return _mock_pending_orders()
     params = {
         **_acct(),
         "INQR_DVSN_1": "0",
@@ -223,13 +249,68 @@ def get_pending_orders() -> list[dict]:
         "CTX_AREA_FK100": "",
         "CTX_AREA_NK100": "",
     }
-    rows = client.paginate(_PATH_PENDING, TR_PENDING, params)
+    rows = client.paginate(_PATH_PENDING, tr(TR_PENDING), params)
 
     orders = []
     for r in rows:
         remain = _i(r.get("psbl_qty"))
         if remain <= 0:
             continue
+        orders.append({
+            "order_no": str(r.get("odno", "")).strip(),
+            "org_no": str(r.get("ord_gno_brno", "")).strip(),
+            "ticker": str(r.get("pdno", "")).strip(),
+            "name": str(r.get("prdt_name", "")).strip(),
+            "side": "buy" if str(r.get("sll_buy_dvsn_cd", "")).strip() == "02" else "sell",
+            "qty": _i(r.get("ord_qty")),
+            "filled_qty": _i(r.get("tot_ccld_qty")),
+            "remain_qty": remain,
+            "price": _i(r.get("ord_unpr")),
+            "order_time": str(r.get("ord_tmd", "")).strip(),
+            "order_dvsn": str(r.get("ord_dvsn_cd", "")).strip() or config.ORD_DVSN_LIMIT,
+        })
+    return orders
+
+
+def _mock_pending_orders() -> list[dict]:
+    """
+    모의투자용 미체결 조회. 정정취소가능주문조회가 모의에서 안 되므로
+    당일 주문체결조회 전체(CCLD_DVSN=00)에서 남은 수량이 있는 주문을 고른다.
+    정정·취소 주문은 원주문번호(orgn_odno)를 달고 따로 나오므로, 그런 행과
+    정정·취소된 원주문은 뺀다 (정정이면 남은 수량은 새 주문번호로 넘어간다).
+    """
+    d = date.today().strftime("%Y%m%d")
+    params = {
+        **_acct(),
+        "INQR_STRT_DT": d,
+        "INQR_END_DT": d,
+        "SLL_BUY_DVSN_CD": "00",
+        "PDNO": "",
+        "ORD_GNO_BRNO": "",
+        "ODNO": "",
+        "CCLD_DVSN": "00",
+        "INQR_DVSN": "00",
+        "INQR_DVSN_1": "",
+        "INQR_DVSN_3": "00",
+        "CTX_AREA_FK100": "",
+        "CTX_AREA_NK100": "",
+    }
+    rows = client.paginate(_PATH_DAILY_CCLD, tr(TR_DAILY_CCLD), params, output_key="output1")
+
+    def _no(v) -> str:
+        return str(v or "").strip().lstrip("0")
+
+    replaced = {_no(r.get("orgn_odno")) for r in rows if _no(r.get("orgn_odno"))}
+
+    orders = []
+    for r in rows:
+        remain = _i(r.get("rmn_qty"))
+        if remain <= 0 or str(r.get("cncl_yn", "")).strip().upper() == "Y":
+            continue
+        if _no(r.get("orgn_odno")) and "취소" in str(r.get("ord_dvsn_name", "")) + str(r.get("sll_buy_dvsn_cd_name", "")):
+            continue          # 취소 주문 행
+        if _no(r.get("odno")) in replaced:
+            continue          # 정정·취소된 원주문
         orders.append({
             "order_no": str(r.get("odno", "")).strip(),
             "org_no": str(r.get("ord_gno_brno", "")).strip(),
@@ -264,7 +345,7 @@ def get_today_fills(target: date | None = None) -> list[dict]:
         "CTX_AREA_FK100": "",
         "CTX_AREA_NK100": "",
     }
-    rows = client.paginate(_PATH_DAILY_CCLD, TR_DAILY_CCLD, params, output_key="output1")
+    rows = client.paginate(_PATH_DAILY_CCLD, tr(TR_DAILY_CCLD), params, output_key="output1")
 
     fills = []
     for r in rows:

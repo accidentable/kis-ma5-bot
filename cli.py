@@ -45,6 +45,7 @@ def cmd_check(args) -> int:
     from core.kis import auth, quotes, trading
 
     print("═" * 60)
+    print(f"환경: {'모의투자' if config.IS_MOCK else '실전'} (KIS_ENV={config.KIS_ENV}) | 주소: {config.KIS_BASE_URL}")
     print(config.summary())
     print("═" * 60)
 
@@ -81,12 +82,15 @@ def cmd_check(args) -> int:
 
     try:
         opened = quotes.is_open_day(date.today())
-        print(f"✅ 휴장일 조회 정상 — 오늘({date.today()}) 개장: {'예' if opened else '아니오'}")
+        how = "평일 여부로 판정 — 모의투자는 휴장일 조회 미지원" if config.IS_MOCK else "휴장일 조회 정상"
+        print(f"✅ {how} — 오늘({date.today()}) 개장: {'예' if opened else '아니오'}")
     except Exception as e:
         print(f"⚠️ 휴장일 조회 실패(주말 판정으로 대체됨): {e}")
 
     if config.DRY_RUN:
         print("\n⚠️ DRY_RUN=true — 주문은 전송되지 않는다. 실매매하려면 .env 에서 false 로 바꿔라.")
+    elif config.IS_MOCK:
+        print("\n🟡 DRY_RUN=false — 모의투자 계좌로 주문이 나간다.")
     else:
         print("\n🔴 DRY_RUN=false — 실제 주문이 나간다.")
     return 0

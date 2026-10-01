@@ -42,13 +42,21 @@ def _env_float(key: str, default: float) -> float:
 
 
 # ══════════════════════════════════════════════════════════════
-# 한국투자증권 Open API — 실전 계좌 전용
+# 한국투자증권 Open API — 실전(real) / 모의투자(mock)
 # ══════════════════════════════════════════════════════════════
-KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "").strip()
-KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "").strip()
-KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "").strip().replace("-", "")
+# KIS_ENV=mock 이면 KIS_MOCK_* 키·계좌와 모의투자 주소를 쓴다. 실전/모의 키는 서로 호환되지 않는다.
+KIS_ENV: str = os.getenv("KIS_ENV", "real").strip().lower()
+IS_MOCK: bool = KIS_ENV == "mock"
 
-KIS_BASE_URL: str = "https://openapi.koreainvestment.com:9443"
+KIS_REAL_URL: str = "https://openapi.koreainvestment.com:9443"
+KIS_MOCK_URL: str = "https://openapivts.koreainvestment.com:29443"
+
+_KEY_PREFIX = "KIS_MOCK_" if IS_MOCK else "KIS_"
+KIS_APP_KEY: str = os.getenv(f"{_KEY_PREFIX}APP_KEY", "").strip()
+KIS_APP_SECRET: str = os.getenv(f"{_KEY_PREFIX}APP_SECRET", "").strip()
+KIS_ACCOUNT_NO: str = os.getenv(f"{_KEY_PREFIX}ACCOUNT_NO", "").strip().replace("-", "")
+
+KIS_BASE_URL: str = KIS_MOCK_URL if IS_MOCK else KIS_REAL_URL
 
 # 계좌번호 분해: 앞 8자리 종합계좌, 뒤 2자리 상품코드
 CANO: str = KIS_ACCOUNT_NO[:8]
@@ -61,8 +69,9 @@ ACNT_PRDT_CD: str = KIS_ACCOUNT_NO[8:10] if len(KIS_ACCOUNT_NO) >= 10 else "01"
 EXCG_ID_DVSN_CD: str = os.getenv("EXCG_ID_DVSN_CD", "KRX").strip().upper()
 
 # 조회 API 유량제한. 공지상 실전은 초당 20건이지만 실제로는 훨씬 빡빡하게 걸린다.
+# 모의투자는 초당 2건 (한투 공식 샘플도 호출마다 0.5초 쉰다).
 # EGW00201 을 만나면 클라이언트가 스스로 더 낮춘다(core/kis/client.py).
-KIS_RATE_LIMIT_PER_SEC: float = _env_float("KIS_RATE_LIMIT_PER_SEC", 2.5)
+KIS_RATE_LIMIT_PER_SEC: float = _env_float("KIS_RATE_LIMIT_PER_SEC", 1.5 if IS_MOCK else 2.5)
 # 주문 API 는 초당 1건.
 KIS_ORDER_INTERVAL_SEC: float = _env_float("KIS_ORDER_INTERVAL_SEC", 1.1)
 
@@ -75,7 +84,8 @@ TOKEN_CACHE: str = os.getenv("TOKEN_CACHE", "file").strip().lower()
 
 AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2").strip()
 DYNAMODB_TABLE: str = os.getenv("DYNAMODB_TABLE", "ma5-bot-state").strip()
-SSM_TOKEN_PATH: str = "/ma5-bot/kis/token"
+# 토큰·상태는 실전/모의를 따로 둔다 (모의 토큰으로 실전을 부르거나, 모의 보유를 실전 보유로 착각하지 않게).
+SSM_TOKEN_PATH: str = "/ma5-bot/kis/token-mock" if IS_MOCK else "/ma5-bot/kis/token"
 
 # Lambda 는 /tmp 만 쓰기 가능하다.
 DATA_DIR: str = os.getenv("DATA_DIR", "/tmp/ma5-bot" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "data")
@@ -316,13 +326,15 @@ def validate() -> list[str]:
     """설정 검증. 치명적 문제의 목록을 반환한다 (빈 리스트면 정상)."""
     problems: list[str] = []
 
+    if KIS_ENV not in ("real", "mock"):
+        problems.append(f"KIS_ENV 값이 잘못됨: {KIS_ENV} (real/mock)")
     if not KIS_APP_KEY:
-        problems.append("KIS_APP_KEY 가 비어 있다")
+        problems.append(f"{_KEY_PREFIX}APP_KEY 가 비어 있다")
     if not KIS_APP_SECRET:
-        problems.append("KIS_APP_SECRET 가 비어 있다")
+        problems.append(f"{_KEY_PREFIX}APP_SECRET 가 비어 있다")
     if len(KIS_ACCOUNT_NO) != 10:
         problems.append(
-            f"KIS_ACCOUNT_NO 는 숫자 10자리여야 한다 (종합계좌 8 + 상품코드 2). 현재 {len(KIS_ACCOUNT_NO)}자리"
+            f"{_KEY_PREFIX}ACCOUNT_NO 는 숫자 10자리여야 한다 (종합계좌 8 + 상품코드 2). 현재 {len(KIS_ACCOUNT_NO)}자리"
         )
     if EXCG_ID_DVSN_CD not in ("KRX", "NXT", "SOR"):
         problems.append(f"EXCG_ID_DVSN_CD 값이 잘못됨: {EXCG_ID_DVSN_CD} (KRX/NXT/SOR)")
@@ -346,7 +358,8 @@ def validate() -> list[str]:
 
 def summary() -> str:
     """현재 설정 요약 (텔레그램/로그용)."""
-    mode = "모의주문(DRY_RUN)" if DRY_RUN else "실주문"
+    env = "모의투자" if IS_MOCK else "실전"
+    mode = f"{env} · " + ("주문 안 보냄(DRY_RUN)" if DRY_RUN else "주문 전송")
     if STRATEGY == "closebet":
         return (
             f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
