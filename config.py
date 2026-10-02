@@ -168,14 +168,15 @@ CB_BUY_TIME: str = os.getenv("CB_BUY_TIME", "1521").strip()     # 장마감 동�
 
 # ── 대회 모드 (STRATEGY=contest) ─────────────────────────────
 # 한 달 안에 +CT_LOCK_PCT% 를 한 번 찍을 확률을 노린다 (평균 수익이 아니다). 근거 backtest/results/contest_tail_20261002.md:
-# 20일 모멘텀 1위 1종목 · 손절 10% · 추적 10% · 보유 10일 · 목표 락 30% → 2020~25 월 +30% 확률 29%, −20% 확률 22%.
+# 20일 모멘텀 1위 1종목 · 손절 10% · 추적 10% · 보유 10일. 락 30% → 2020~25 월 +30% 확률 29%, −20% 확률 22%.
+# 29거래일 창(대회 길이) 락 50%: +50% 확률 24%, +30% 31%, −30% 14% (락 30% 는 +30% 39%, +50% 12%).
 CT_SLOTS: int = _env_int("CT_SLOTS", 1)                          # 동시에 드는 종목 수 (1 이 꼬리 확률 최대, 2 면 −30% 위험 절반)
 CT_LOOKBACK: int = _env_int("CT_LOOKBACK", 20)                   # 순위에 쓰는 수익률 기간 (거래일)
 CT_TOP_PCT: float = _env_float("CT_TOP_PCT", 10.0)               # 대상 중 상위 몇 % 안에서 고르나
 CT_STOP_PCT: float = _env_float("CT_STOP_PCT", 10.0)             # 손절 (종가 기준 → 다음 날 시가)
 CT_TRAIL_PCT: float = _env_float("CT_TRAIL_PCT", 10.0)           # 추적 손절 (보유 중 최고 종가 대비)
 CT_HOLD_DAYS: int = _env_int("CT_HOLD_DAYS", 10)                 # 최대 보유 거래일, 지나면 다음 날 시가 매도 후 1위로 교체
-CT_LOCK_PCT: float = _env_float("CT_LOCK_PCT", 30.0)             # 월초 순자산 대비 이만큼 넘으면 전량 매도 후 월말까지 현금
+CT_LOCK_PCT: float = _env_float("CT_LOCK_PCT", 50.0)             # 월초 순자산 대비 이만큼 넘으면 전량 매도 후 월말까지 현금 (10/02 30→50: +50% 노림)
 CT_CRASH_ENABLED: bool = _env_bool("CT_CRASH_ENABLED", True)     # 폭락일 급락주 전환
 CT_CRASH_MKT_PCT: float = _env_float("CT_CRASH_MKT_PCT", 3.0)    # 대상 평균 등락 −N% 이하
 CT_CRASH_SIGMA: float = _env_float("CT_CRASH_SIGMA", 3.0)        # 그리고 직전 20일 시장 변동성의 N 배 이하
@@ -397,7 +398,7 @@ def summary() -> str:
     mode = f"{env} · " + ("주문 안 보냄(DRY_RUN)" if DRY_RUN else "주문 전송")
     if STRATEGY == "contest":
         return (
-            f"🏆 대회 모드  ({'DRY_RUN · 주문 안 보냄' if DRY_RUN else '실주문'})\n"
+            f"🏆 대회 모드  ({env} · {'DRY_RUN · 주문 안 보냄' if DRY_RUN else '실주문'})\n"
             f"계좌 {CANO[:4]}****{ACNT_PRDT_CD} · {EXCG_ID_DVSN_CD}\n\n"
             f"목표  한 달 +{CT_LOCK_PCT:g}% 한 번 (평균 아님)\n"
             f"종목  코스피{CT_KOSPI_N}·코스닥{CT_KOSDAQ_N} 중\n"
