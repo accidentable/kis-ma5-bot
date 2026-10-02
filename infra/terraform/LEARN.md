@@ -292,3 +292,150 @@ Makefile 은 그걸 받아서 `ssh root@<IP>` 같은 명령을 `make ssh` 한 �
 3. 네이버 provider 문서: https://registry.terraform.io/providers/NaverCloudPlatform/ncloud/latest/docs
    (화면이 안 뜨면 GitHub 의 `docs/` 폴더를 본다: https://github.com/NaverCloudPlatform/terraform-provider-ncloud/tree/main/docs)
 4. 다음 연습 과제: 이 코드를 **module** 로 감싸서 `mock` 용 서버와 `real` 용 서버 두 대를 변수만 바꿔 만들어 보기.
+
+---
+
+## 9. 실전 과제: 노트북 IP 가 바뀔 때마다 SSH 허용 IP 를 코드로 갱신하기
+
+목표: **지금 쓰는 서버**의 ACG 에서 22번 포트 허용 IP 를, 콘솔 대신 `terraform apply` 한 번으로 "지금 내 노트북 IP" 로 바꾼다.
+서버 전체를 Terraform 에 넣는 게 아니라 **방화벽 규칙 하나만** 가져온다. 그래서 7장과는 **별도 폴더, 별도 장부(state)** 로 한다.
+
+### 9-0. 원리
+
+- `ncloud_access_control_group_rule` 리소스는 "ACG 하나에 달린 규칙 **전체**" 다. 리소스 id = ACG 번호.
+- 이미 콘솔에서 만든 걸 Terraform 장부에 올리는 걸 **import** 라고 한다. 가져온 뒤엔 코드가 진실이 된다.
+  → **코드에 안 적힌 규칙은 apply 때 지워진다.** 그래서 지금 ACG 에 있는 규칙을 빠짐없이 옮겨 적어야 한다.
+- 내 IP 는 `http` 라는 provider 로 `https://checkip.amazonaws.com` 에 물어본다. 사람이 IP 를 안 쳐도 된다.
+
+> 조심: 규칙을 잘못 적으면 **SSH 가 막힌다.** 그래도 콘솔에서 ACG 를 고치면 다시 들어갈 수 있으니 치명적이진 않다.
+> 같은 서버의 docker 앱이 쓰는 포트(80, 443 등)가 ACG 에 열려 있다면 그것도 반드시 옮겨 적어야 한다.
+
+### 9-1. 준비 (콘솔에서 두 가지 확인)
+
+콘솔 → VPC → **ACG** 메뉴 → 서버에 붙은 ACG 를 연다.
+1. **ACG 번호** (ACG ID, 숫자) 를 적는다.
+2. **규칙 목록** 전부를 적는다: Inbound 탭과 Outbound 탭 각각 (프로토콜 / 접근소스 / 포트 / 메모).
+   어느 ACG 인지 모르겠으면 콘솔 → Server → 서버 상세 → 네트워크 인터페이스 → ACG 이름을 본다.
+
+### 9-2. 폴더 만들기 (네가 직접 친다)
+
+```bash
+mkdir -p ~/kis-lab/infra/terraform/ssh-access && cd $_
+```
+
+`versions.tf`:
+```hcl
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    ncloud = { source = "NaverCloudPlatform/ncloud", version = "~> 4.0" }
+    http   = { source = "hashicorp/http", version = "~> 3.4" }
+  }
+}
+provider "ncloud" {
+  region      = "KR"
+  site        = "public"
+  support_vpc = true
+}
+```
+
+`variables.tf`:
+```hcl
+variable "acg_no" {
+  description = "콘솔에서 본 ACG 번호"
+  type        = string
+}
+```
+
+`main.tf`:
+```hcl
+# 지금 내 공인 IP. 응답은 "1.2.3.4\n" 이라서 trimspace 로 줄바꿈을 뗀다.
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com"
+}
+
+locals {
+  my_cidr = "${trimspace(data.http.my_ip.response_body)}/32"
+}
+
+# 기존 규칙 뭉치를 장부에 올린다. 한 번 import 되면 이 블록은 지워도 된다 (남겨 둬도 무해).
+import {
+  to = ncloud_access_control_group_rule.main
+  id = var.acg_no
+}
+
+resource "ncloud_access_control_group_rule" "main" {
+  access_control_group_no = var.acg_no
+
+  inbound {
+    protocol    = "TCP"
+    ip_block    = local.my_cidr
+    port_range  = "22"
+    description = "ssh from laptop (terraform)"
+  }
+
+  # ↓ 9-1 에서 적어 온 나머지 규칙을 전부 여기 옮긴다. 예:
+  # inbound { protocol = "TCP"  ip_block = "0.0.0.0/0"  port_range = "443"  description = "docker app" }
+
+  outbound {
+    protocol    = "TCP"
+    ip_block    = "0.0.0.0/0"
+    port_range  = "1-65535"
+  }
+  outbound {
+    protocol    = "UDP"
+    ip_block    = "0.0.0.0/0"
+    port_range  = "1-65535"
+  }
+  outbound {
+    protocol = "ICMP"
+    ip_block = "0.0.0.0/0"
+  }
+}
+
+output "allowed_ssh_from" { value = local.my_cidr }
+```
+
+`terraform.tfvars` (git 제외):
+```hcl
+acg_no = "123456"
+```
+
+`.gitignore` 는 상위 폴더 것이 그대로 적용된다 (state, tfvars 제외됨).
+
+### 9-3. 처음 한 번: import
+
+```bash
+export NCLOUD_ACCESS_KEY=... NCLOUD_SECRET_KEY=...
+terraform init
+terraform plan
+```
+
+plan 출력을 읽는 법:
+- `ncloud_access_control_group_rule.main will be imported` — 장부에 올리겠다는 뜻. 정상.
+- 그 아래 `~ update in-place` 와 `inbound` 의 `-`/`+` 줄들 — **콘솔에 있는 규칙과 코드의 차이**다.
+  `-` 로 빠지는 줄이 "docker 앱 포트" 같은 거면 코드에 빠뜨린 것이니 추가하고 다시 plan.
+  `-` 가 "예전 노트북 IP 의 22번" 하나뿐이고 `+` 가 지금 IP 면 정답.
+- `Plan: 1 to import, 0 to add, 1 to change, 0 to destroy.` 로 끝나야 한다. `destroy` 가 1 이면 멈춘다.
+
+맞으면 `terraform apply`. 끝나고 `ssh root@<서버IP>` 가 되는지 확인.
+
+### 9-4. 이후 매번 (카페·회사 등 IP 가 바뀌었을 때)
+
+```bash
+cd ~/kis-lab/infra/terraform/ssh-access
+terraform apply
+```
+plan 에 `22` 규칙의 ip_block 만 `~` 로 바뀌면 `yes`. 10초면 끝난다.
+노트북 셸에 별칭을 걸어 두면 더 편하다:
+```bash
+alias ncp-ssh-open='cd ~/kis-lab/infra/terraform/ssh-access && terraform apply -auto-approve && cd -'
+```
+
+### 9-5. 더 해보기
+
+- `terraform state show ncloud_access_control_group_rule.main` — 장부에 뭐가 적혔는지 본다.
+- 7장의 새 서버 코드에서는 이 "내 IP 자동 조회" 를 `ssh_allowed_cidr` 변수 대신 쓰도록 바꿔 보기.
+  (힌트: `data "http"` + `locals` 를 `main.tf` 로 옮기고 `var.ssh_allowed_cidr` 자리에 `local.my_cidr`.)
+- IP 를 두 개 허용(집 + 회사)하려면 `inbound` 블록을 두 개 쓰거나, `dynamic "inbound"` + `for_each` 로 목록을 돌린다.
+  `dynamic` 은 HCL 문법 문서의 "Dynamic Blocks" 항목.
