@@ -1,9 +1,14 @@
 """
 config.py — 환경변수 로드 + 전략 파라미터
 
-전략 요약 (MA5 돌파 역발상):
-  진입  5일선 아래에 머물던 KOSPI100 종목이 09:05 시점에 5일선 위로 올라오면 전액 매수
-  청산  +10% 익절 | 5일선 이탈 | 3거래일 보유 만료 — 먼저 닿는 것
+전략은 STRATEGY 로 고른다.
+  near_high         52주 신고가 근접 로테이션
+                    코스피+코스닥 시총 상위 200 중 '전일 종가 / 250일 최고가' 가 가장 높은 2종목을
+                    반반 사서 21거래일 들고, 21거래일마다 다시 골라 교체한다. 손절·익절 없음.
+                    근거: backtest/results/strategy_report5_*.md (KRX 전종목 16년, 상장폐지 포함)
+  closebet          종가 베팅 (선택형): 강세 마감 테마주를 종가에 사서 다음 날 시가에 판다 — 검증 미통과
+  contest (기본)    대회 모드: 20일 모멘텀 1위 1종목 집중 + 손절·추적 + 목표 락 — 한 달 +30% 확률 최대화 (contest_tail_20261002.md)
+  ma5               예전 MA5 돌파 역발상 (5일선 아래 → 위 돌파 매수, 익절 | 5일선 이탈 | 3거래일)
 """
 from __future__ import annotations
 
@@ -38,13 +43,21 @@ def _env_float(key: str, default: float) -> float:
 
 
 # ══════════════════════════════════════════════════════════════
-# 한국투자증권 Open API — 실전 계좌 전용
+# 한국투자증권 Open API — 실전(real) / 모의투자(mock)
 # ══════════════════════════════════════════════════════════════
-KIS_APP_KEY: str = os.getenv("KIS_APP_KEY", "").strip()
-KIS_APP_SECRET: str = os.getenv("KIS_APP_SECRET", "").strip()
-KIS_ACCOUNT_NO: str = os.getenv("KIS_ACCOUNT_NO", "").strip().replace("-", "")
+# KIS_ENV=mock 이면 KIS_MOCK_* 키·계좌와 모의투자 주소를 쓴다. 실전/모의 키는 서로 호환되지 않는다.
+KIS_ENV: str = os.getenv("KIS_ENV", "real").strip().lower()
+IS_MOCK: bool = KIS_ENV == "mock"
 
-KIS_BASE_URL: str = "https://openapi.koreainvestment.com:9443"
+KIS_REAL_URL: str = "https://openapi.koreainvestment.com:9443"
+KIS_MOCK_URL: str = "https://openapivts.koreainvestment.com:29443"
+
+_KEY_PREFIX = "KIS_MOCK_" if IS_MOCK else "KIS_"
+KIS_APP_KEY: str = os.getenv(f"{_KEY_PREFIX}APP_KEY", "").strip()
+KIS_APP_SECRET: str = os.getenv(f"{_KEY_PREFIX}APP_SECRET", "").strip()
+KIS_ACCOUNT_NO: str = os.getenv(f"{_KEY_PREFIX}ACCOUNT_NO", "").strip().replace("-", "")
+
+KIS_BASE_URL: str = KIS_MOCK_URL if IS_MOCK else KIS_REAL_URL
 
 # 계좌번호 분해: 앞 8자리 종합계좌, 뒤 2자리 상품코드
 CANO: str = KIS_ACCOUNT_NO[:8]
@@ -57,8 +70,9 @@ ACNT_PRDT_CD: str = KIS_ACCOUNT_NO[8:10] if len(KIS_ACCOUNT_NO) >= 10 else "01"
 EXCG_ID_DVSN_CD: str = os.getenv("EXCG_ID_DVSN_CD", "KRX").strip().upper()
 
 # 조회 API 유량제한. 공지상 실전은 초당 20건이지만 실제로는 훨씬 빡빡하게 걸린다.
+# 모의투자는 초당 2건 (한투 공식 샘플도 호출마다 0.5초 쉰다).
 # EGW00201 을 만나면 클라이언트가 스스로 더 낮춘다(core/kis/client.py).
-KIS_RATE_LIMIT_PER_SEC: float = _env_float("KIS_RATE_LIMIT_PER_SEC", 2.5)
+KIS_RATE_LIMIT_PER_SEC: float = _env_float("KIS_RATE_LIMIT_PER_SEC", 1.5 if IS_MOCK else 2.5)
 # 주문 API 는 초당 1건.
 KIS_ORDER_INTERVAL_SEC: float = _env_float("KIS_ORDER_INTERVAL_SEC", 1.1)
 
@@ -71,7 +85,8 @@ TOKEN_CACHE: str = os.getenv("TOKEN_CACHE", "file").strip().lower()
 
 AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2").strip()
 DYNAMODB_TABLE: str = os.getenv("DYNAMODB_TABLE", "ma5-bot-state").strip()
-SSM_TOKEN_PATH: str = "/ma5-bot/kis/token"
+# 토큰·상태는 실전/모의를 따로 둔다 (모의 토큰으로 실전을 부르거나, 모의 보유를 실전 보유로 착각하지 않게).
+SSM_TOKEN_PATH: str = "/ma5-bot/kis/token-mock" if IS_MOCK else "/ma5-bot/kis/token"
 
 # Lambda 는 /tmp 만 쓰기 가능하다.
 DATA_DIR: str = os.getenv("DATA_DIR", "/tmp/ma5-bot" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else "data")
@@ -86,7 +101,106 @@ TELEGRAM_ALLOWED_CHAT_IDS: list[int] = [
 ]
 
 # ══════════════════════════════════════════════════════════════
-# 유니버스
+# 전략 선택
+# ══════════════════════════════════════════════════════════════
+STRATEGY: str = os.getenv("STRATEGY", "contest").strip().lower()   # 2026-10 부터 기본은 대회 모드. 신고가 로테이션은 STRATEGY=near_high
+
+# ── 52주 신고가 근접 로테이션 (STRATEGY=near_high) ─────────────
+NH_UNIVERSE_TOP: int = _env_int("NH_UNIVERSE_TOP", 200)        # 코스피+코스닥 시총 상위 N
+NH_SLOTS: int = _env_int("NH_SLOTS", 2)                        # 보유 종목 수 (계좌를 N 등분)
+NH_HOLD_DAYS: int = _env_int("NH_HOLD_DAYS", 21)               # 교체 주기 (거래일)
+NH_HIGH_LOOKBACK: int = _env_int("NH_HIGH_LOOKBACK", 250)      # 신고가 기준 기간 (거래일)
+NH_MOM_DAYS: int = _env_int("NH_MOM_DAYS", 60)                 # 이 기간 수익률 > 0 인 종목만
+NH_MIN_PRICE: float = _env_float("NH_MIN_PRICE", 1000)         # 주가 하한 (원)
+NH_MIN_VALUE: float = _env_float("NH_MIN_VALUE", 1_000_000_000)  # 20일 평균 거래대금 하한 (원)
+# 최근 20거래일 안에 하루 이 % 이상 오른 날이 있으면 뺀다 (급등 테마주 회피). 0 이면 끔.
+# 16년 백테스트: 한 달 평균은 비슷하고, 한 달 −10% 이하 확률이 모든 구간에서 줄었다 (7→5, 8→5, 13→6, 16→5%).
+NH_MAX_DAILY_GAIN_PCT: float = _env_float("NH_MAX_DAILY_GAIN_PCT", 10.0)
+# 보유 종목이 하루 이 % 이상 오르면 그날 마감 작업(15:15)에서 판다 (급등 뒤 부진). 0 이면 끔.
+# 빈 자리는 다음 날 순위로 채운다 (NH_REFILL). 16년 백테스트: 한 달 평균 −0.1/+0.9/+1.5/+0.4% → −0.1/+1.1/+1.7/+1.0%
+NH_SURGE_EXIT_PCT: float = _env_float("NH_SURGE_EXIT_PCT", 10.0)
+NH_CANDIDATES: int = _env_int("NH_CANDIDATES", 15)             # 순위표에 남길 후보 수 (비싸서 못 사면 다음 순위)
+# 교체일이 아닌 날에도 빈 슬롯이 있으면 그날 순위로 채운다 (매수 실패·수동 매도 뒤 복구용)
+NH_REFILL: bool = _env_bool("NH_REFILL", True)
+NH_PREP_TIME: str = os.getenv("NH_PREP_TIME", "0820").strip()   # 순위 계산 (시총 200 × 일봉 250개, 3~5분)
+NH_ENTRY_TIME: str = os.getenv("NH_ENTRY_TIME", "0905").strip()  # 교체 매도 → 매수
+NH_BUY_CUTOFF: str = os.getenv("NH_BUY_CUTOFF", "1430").strip()  # 이 시각 이후엔 빈 슬롯 매수 재시도 안 함
+# 손절 (%). 0 이면 없음 — 백테스트는 손절 없이 검증했다. 켜면 검증 밖의 규칙이 된다.
+NH_STOP_LOSS_PCT: float = _env_float("NH_STOP_LOSS_PCT", 0.0)
+
+# ── 패닉 모드 (near_high 위에 얹는 선택 기능, 기본 꺼짐) ───────────
+# 장 마감 뒤 시장 평균 등락률이 −PANIC_MKT_DROP_PCT% 이하면, 다음 날 평소 보유를 모두 팔고 최근 5일 가장 많이 빠진
+# 과매도주 PANIC_SLOTS 개를 같은 금액씩 사서 PANIC_HOLD_DAYS 거래일째 15:15 에 판다. 규칙은 core/panic.py.
+# 백테스트 (1억, 5종목): 봇 대비 한 달 평균 2011~2019 +1.4%p, 2020~ +1.7%p (여러 설정을 본 뒤 고른 값 — 실제는 더 낮을 수 있다)
+PANIC_ENABLED: bool = _env_bool("PANIC_ENABLED", False)
+PANIC_MKT_DROP_PCT: float = _env_float("PANIC_MKT_DROP_PCT", 4.0)        # 급락일 기준 (시장 평균 등락률 %)
+PANIC_SLOTS: int = _env_int("PANIC_SLOTS", 5)                           # 패닉 때 살 종목 수 (계좌를 N 등분)
+PANIC_HOLD_DAYS: int = _env_int("PANIC_HOLD_DAYS", 5)                   # 보유 거래일 (산 날 = 1일째)
+PANIC_UNIVERSE_TOP: int = _env_int("PANIC_UNIVERSE_TOP", 1500)          # 시장 평균 계산 범위 (시총 상위 N)
+PANIC_MKT_MIN_VALUE: float = _env_float("PANIC_MKT_MIN_VALUE", 3_000_000_000)   # 시장 평균에 넣을 20일 거래대금 하한
+PANIC_PICK_TOP: int = _env_int("PANIC_PICK_TOP", 1000)                  # 후보 시총 순위 상한
+PANIC_PICK_MIN_VALUE: float = _env_float("PANIC_PICK_MIN_VALUE", 2_000_000_000)  # 후보 20일 거래대금 하한
+PANIC_IBS_MAX: float = _env_float("PANIC_IBS_MAX", 0.7)                 # 고가 근처 마감 종목 제외 (종가 위치)
+PANIC_VR_MAX: float = _env_float("PANIC_VR_MAX", 3.0)                   # 오늘 거래대금이 20일 평균의 N 배 이상이면 제외
+PANIC_CANDIDATES: int = _env_int("PANIC_CANDIDATES", 15)                # 저장할 후보 수 (못 사면 다음 순위)
+PANIC_SCAN_TIME: str = os.getenv("PANIC_SCAN_TIME", "1535").strip()     # 급락 판정 (시총 1500 × 일봉, 모의투자 약 10분)
+
+# ── 대회 수상 조건 (수동 매매 /progress 가 비교한다) ───────────
+CONTEST_START: str = os.getenv("CONTEST_START", "").strip()          # 예: 2026-11-02. 비우면 이번 달 1일
+CONTEST_MIN_AMOUNT: float = _env_float("CONTEST_MIN_AMOUNT", 500_000_000)   # 매매금액 (체결, 매수+매도)
+CONTEST_MIN_DAYS: int = _env_int("CONTEST_MIN_DAYS", 5)                    # 매매일수
+CONTEST_MIN_STOCKS: int = _env_int("CONTEST_MIN_STOCKS", 5)                # 매매종목수 (코스피200 · 코스닥150)
+
+# ── 종가 베팅 (STRATEGY=closebet, 선택형 — 기본 아님) ───────────
+# 당일 강세 마감 테마주(거래대금 상위)를 장마감 동시호가에 사서 다음 날 장전 동시호가에 판다.
+# 16년 백테스트에서 기대값 0 근처 (IS +0.4%, VAL −0.8%, TEST +0.3% / 한 달). 검증을 통과하지 못했다.
+CB_SLOTS: int = _env_int("CB_SLOTS", 2)
+CB_RANK_TOP: int = _env_int("CB_RANK_TOP", 30)                 # 당일 거래대금 순위 N 위 안
+CB_MIN_CHANGE_PCT: float = _env_float("CB_MIN_CHANGE_PCT", 5.0)   # 당일 등락률 하한
+CB_MAX_CHANGE_PCT: float = _env_float("CB_MAX_CHANGE_PCT", 29.0)  # 이상은 상한가 근처라 못 산다
+CB_MIN_IBS: float = _env_float("CB_MIN_IBS", 0.9)               # (현재가−저가)/(고가−저가) — 고가 근처 마감
+CB_MIN_VALUE: float = _env_float("CB_MIN_VALUE", 5_000_000_000)   # 당일 거래대금 하한 (원)
+CB_REGIME: bool = _env_bool("CB_REGIME", True)                  # 코스닥지수가 100일선 위일 때만
+CB_BUY_TICKS: int = _env_int("CB_BUY_TICKS", 5)                 # 장마감 동시호가 매수 지정가 = 현재가 + N틱
+CB_SELL_TIME: str = os.getenv("CB_SELL_TIME", "0845").strip()   # 장전 동시호가 매도
+CB_CHECK_TIME: str = os.getenv("CB_CHECK_TIME", "0905").strip() # 안 팔린 것 현재가 매도
+CB_BUY_TIME: str = os.getenv("CB_BUY_TIME", "1521").strip()     # 장마감 동시호가(15:20~15:30) 매수
+
+# ── 대회 모드 (STRATEGY=contest) ─────────────────────────────
+# 한 달 안에 +CT_LOCK_PCT% 를 한 번 찍을 확률을 노린다 (평균 수익이 아니다). 근거 backtest/results/contest_tail_20261002.md:
+# 20일 모멘텀 1위 1종목 · 손절 10% · 추적 10% · 보유 10일. 락 30% → 2020~25 월 +30% 확률 29%, −20% 확률 22%.
+# 29거래일 창(대회 길이) 락 50%: +50% 확률 24%, +30% 31%, −30% 14% (락 30% 는 +30% 39%, +50% 12%).
+CT_SLOTS: int = _env_int("CT_SLOTS", 1)                          # 동시에 드는 종목 수 (1 이 꼬리 확률 최대, 2 면 −30% 위험 절반)
+CT_LOOKBACK: int = _env_int("CT_LOOKBACK", 20)                   # 순위에 쓰는 수익률 기간 (거래일)
+CT_TOP_PCT: float = _env_float("CT_TOP_PCT", 10.0)               # 대상 중 상위 몇 % 안에서 고르나
+CT_STOP_PCT: float = _env_float("CT_STOP_PCT", 10.0)             # 손절 (종가 기준 → 다음 날 시가)
+CT_TRAIL_PCT: float = _env_float("CT_TRAIL_PCT", 10.0)           # 추적 손절 (보유 중 최고 종가 대비)
+CT_HOLD_DAYS: int = _env_int("CT_HOLD_DAYS", 10)                 # 최대 보유 거래일, 지나면 다음 날 시가 매도 후 1위로 교체
+CT_LOCK_PCT: float = _env_float("CT_LOCK_PCT", 50.0)             # 월초 순자산 대비 이만큼 넘으면 전량 매도 후 월말까지 현금 (10/02 30→50: +50% 노림)
+CT_CRASH_ENABLED: bool = _env_bool("CT_CRASH_ENABLED", True)     # 폭락일 급락주 전환
+CT_CRASH_MKT_PCT: float = _env_float("CT_CRASH_MKT_PCT", 3.0)    # 대상 평균 등락 −N% 이하
+CT_CRASH_SIGMA: float = _env_float("CT_CRASH_SIGMA", 3.0)        # 그리고 직전 20일 시장 변동성의 N 배 이하
+CT_CRASH_DROP_PCT: float = _env_float("CT_CRASH_DROP_PCT", 7.0)  # 급락주 후보: 오늘 −N% 이하
+CT_CRASH_VR_MAX: float = _env_float("CT_CRASH_VR_MAX", 3.0)      # 거래대금이 20일 평균의 N 배 이상이면 제외 (뉴스 의심)
+CT_CRASH_IDIO_MULT: float = _env_float("CT_CRASH_IDIO_MULT", 3.0)  # 종목 낙폭이 시장 낙폭의 N 배 이상이면 제외 (혼자 빠짐)
+CT_CRASH_HOLD: int = _env_int("CT_CRASH_HOLD", 5)                # 전환 보유 거래일
+CT_CRASH_MIN_N: int = _env_int("CT_CRASH_MIN_N", 100)           # 시장 평균을 믿으려면 현재가가 잡힌 종목이 이만큼은 돼야
+CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 월 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_PAPER_CAP: float = _env_float("CT_PAPER_CAP", 100_000_000)   # DRY_RUN 일 때 수량·순자산 계산에 쓰는 종이 계좌 (실계좌 잔고 대신)
+CT_BRIEF_N: int = _env_int("CT_BRIEF_N", 5)                      # 아침 브리핑에 보여줄 후보 수 (어제 종가 기준 모멘텀 상위)
+CT_BUY_TICKS: int = _env_int("CT_BUY_TICKS", 5)                  # 장마감 동시호가 매수 지정가 = 현재가 + N틱 (상한가 이내)
+CT_KOSPI_N: int = _env_int("CT_KOSPI_N", 200)                    # 대상: 코스피 시총 상위 N
+CT_KOSDAQ_N: int = _env_int("CT_KOSDAQ_N", 150)                  #       코스닥 시총 상위 N
+CT_UNIVERSE_PULL: int = _env_int("CT_UNIVERSE_PULL", 1500)       # 둘을 뽑기 위해 받는 시총 상위 수
+CT_PREP_TIME: str = os.getenv("CT_PREP_TIME", "0820").strip()    # 일봉 캐시 (350종목, 2~3분)
+CT_SELL_TIME: str = os.getenv("CT_SELL_TIME", "0845").strip()    # 장전 동시호가 매도
+CT_CHECK_TIME: str = os.getenv("CT_CHECK_TIME", "0905").strip()  # 안 팔린 것 현재가 매도
+CT_SCAN_TIME: str = os.getenv("CT_SCAN_TIME", "1505").strip()    # 판정 (현재가 350개, 2~3분)
+CT_BUY_TIME: str = os.getenv("CT_BUY_TIME", "1520").strip()      # 장마감 동시호가 매수
+CT_EVAL_TIME: str = os.getenv("CT_EVAL_TIME", "1540").strip()    # 종가 판정 · 리포트
+
+# ══════════════════════════════════════════════════════════════
+# 유니버스 (STRATEGY=ma5)
 # ══════════════════════════════════════════════════════════════
 # 한투 종목마스터(kospi_code.mst)의 KOSPI100 플래그를 그대로 쓴다.
 UNIVERSE_FLAG: str = "KOSPI100"
@@ -246,13 +360,15 @@ def validate() -> list[str]:
     """설정 검증. 치명적 문제의 목록을 반환한다 (빈 리스트면 정상)."""
     problems: list[str] = []
 
+    if KIS_ENV not in ("real", "mock"):
+        problems.append(f"KIS_ENV 값이 잘못됨: {KIS_ENV} (real/mock)")
     if not KIS_APP_KEY:
-        problems.append("KIS_APP_KEY 가 비어 있다")
+        problems.append(f"{_KEY_PREFIX}APP_KEY 가 비어 있다")
     if not KIS_APP_SECRET:
-        problems.append("KIS_APP_SECRET 가 비어 있다")
+        problems.append(f"{_KEY_PREFIX}APP_SECRET 가 비어 있다")
     if len(KIS_ACCOUNT_NO) != 10:
         problems.append(
-            f"KIS_ACCOUNT_NO 는 숫자 10자리여야 한다 (종합계좌 8 + 상품코드 2). 현재 {len(KIS_ACCOUNT_NO)}자리"
+            f"{_KEY_PREFIX}ACCOUNT_NO 는 숫자 10자리여야 한다 (종합계좌 8 + 상품코드 2). 현재 {len(KIS_ACCOUNT_NO)}자리"
         )
     if EXCG_ID_DVSN_CD not in ("KRX", "NXT", "SOR"):
         problems.append(f"EXCG_ID_DVSN_CD 값이 잘못됨: {EXCG_ID_DVSN_CD} (KRX/NXT/SOR)")
@@ -262,13 +378,65 @@ def validate() -> list[str]:
         problems.append(f"POSITION_PCT 는 0 초과 100 이하: {POSITION_PCT}")
     if BELOW_MIN_DAYS > BELOW_LOOKBACK:
         problems.append("BELOW_MIN_DAYS 가 BELOW_LOOKBACK 보다 클 수 없다")
+    if STRATEGY not in ("near_high", "ma5", "closebet", "contest"):
+        problems.append(f"STRATEGY 값이 잘못됨: {STRATEGY} (near_high/closebet/contest/ma5)")
+    if CT_SLOTS < 1 or CT_LOCK_PCT <= 0 or CT_LOOKBACK < 5:
+        problems.append("CT_SLOTS ≥ 1, CT_LOCK_PCT > 0, CT_LOOKBACK ≥ 5")
+    if NH_SLOTS < 1 or NH_HOLD_DAYS < 1:
+        problems.append("NH_SLOTS, NH_HOLD_DAYS 는 1 이상")
+    if PANIC_ENABLED and STRATEGY != "near_high":
+        problems.append("PANIC_ENABLED 는 STRATEGY=near_high 에서만 동작한다")
+    if PANIC_SLOTS < 1 or PANIC_HOLD_DAYS < 1:
+        problems.append("PANIC_SLOTS, PANIC_HOLD_DAYS 는 1 이상")
 
     return problems
 
 
 def summary() -> str:
     """현재 설정 요약 (텔레그램/로그용)."""
-    mode = "모의주문(DRY_RUN)" if DRY_RUN else "실주문"
+    env = "모의투자" if IS_MOCK else "실전"
+    mode = f"{env} · " + ("주문 안 보냄(DRY_RUN)" if DRY_RUN else "주문 전송")
+    if STRATEGY == "contest":
+        return (
+            f"🏆 대회 모드  ({env} · {'DRY_RUN · 주문 안 보냄' if DRY_RUN else '실주문'})\n"
+            f"계좌 {CANO[:4]}****{ACNT_PRDT_CD} · {EXCG_ID_DVSN_CD}\n\n"
+            f"목표  한 달 +{CT_LOCK_PCT:g}% 한 번 (평균 아님)\n"
+            f"종목  코스피{CT_KOSPI_N}·코스닥{CT_KOSDAQ_N} 중\n"
+            f"      {CT_LOOKBACK}일 수익률 상위 {CT_TOP_PCT:g}% 1위 {CT_SLOTS}종목\n\n"
+            f"매수  {CT_BUY_TIME[:2]}:{CT_BUY_TIME[2:]} 종가 (동시호가)\n"
+            f"매도  손절 −{CT_STOP_PCT:g}% / 고점 −{CT_TRAIL_PCT:g}% / {CT_HOLD_DAYS}일\n"
+            f"      → 다음 날 {CT_SELL_TIME[:2]}:{CT_SELL_TIME[2:]} 시가\n"
+            f"락    월초 +{CT_LOCK_PCT:g}% 넘으면 전량 매도"
+            + (f"\n폭락  시장 −{CT_CRASH_MKT_PCT:g}%·{CT_CRASH_SIGMA:g}σ → 급락주 {CT_CRASH_HOLD}일" if CT_CRASH_ENABLED else "")
+            + (f"\n조건  첫 매수 때 {CT_FILLER_N}종목 1주씩" if CT_FILLER_N else "")
+        )
+    if STRATEGY == "closebet":
+        return (
+            f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
+            f"전략: 종가 베팅 (테마주, 선택형 — 백테스트 기대값 0 근처)\n"
+            f"매수: {CB_BUY_TIME[:2]}:{CB_BUY_TIME[2:]} 장마감 동시호가 — 거래대금 {CB_RANK_TOP}위 안, "
+            f"+{CB_MIN_CHANGE_PCT:g}~{CB_MAX_CHANGE_PCT:g}%, IBS ≥ {CB_MIN_IBS:g}, 거래대금 {CB_MIN_VALUE / 1e8:,.0f}억↑"
+            + (", 코스닥 100일선 위" if CB_REGIME else "") + f" | {CB_SLOTS}종목\n"
+            f"매도: 다음 날 {CB_SELL_TIME[:2]}:{CB_SELL_TIME[2:]} 장전 동시호가 (시가), "
+            f"{CB_CHECK_TIME[:2]}:{CB_CHECK_TIME[2:]} 남은 것 현재가 매도"
+        )
+    if STRATEGY == "near_high":
+        stop = f"{NH_STOP_LOSS_PCT:g}%" if NH_STOP_LOSS_PCT > 0 else "없음"
+        return (
+            f"모드: {mode} | 계좌: {CANO[:4]}****{ACNT_PRDT_CD} | 거래소: {EXCG_ID_DVSN_CD}\n"
+            f"전략: 52주 신고가 근접 로테이션\n"
+            f"유니버스: 코스피+코스닥 시총 상위 {NH_UNIVERSE_TOP} (주가 {NH_MIN_PRICE:,.0f}원↑, "
+            f"거래대금 {NH_MIN_VALUE / 1e8:,.0f}억↑, {NH_MOM_DAYS}일 수익률 > 0"
+            + (f", 20일 내 +{NH_MAX_DAILY_GAIN_PCT:g}%↑ 급등일 없음" if NH_MAX_DAILY_GAIN_PCT > 0 else "") + ")\n"
+            f"순위: 전일 종가 / {NH_HIGH_LOOKBACK}일 최고가 (높을수록 먼저)\n"
+            f"보유: {NH_SLOTS}종목 균등 | {NH_HOLD_DAYS}거래일마다 교체 | 손절 {stop}"
+            + (f" | 하루 +{NH_SURGE_EXIT_PCT:g}%↑ 급등 시 마감 때 매도" if NH_SURGE_EXIT_PCT > 0 else "") + "\n"
+            f"일정: {NH_PREP_TIME[:2]}:{NH_PREP_TIME[2:]} 순위 계산 → {NH_ENTRY_TIME[:2]}:{NH_ENTRY_TIME[2:]} 교체 매매 "
+            f"(빈 슬롯은 {NH_BUY_CUTOFF[:2]}:{NH_BUY_CUTOFF[2:]}까지 10분마다 재시도)"
+            + (f"\n패닉 모드: 켜짐 — {PANIC_SCAN_TIME[:2]}:{PANIC_SCAN_TIME[2:]} 시장 평균 −{PANIC_MKT_DROP_PCT:g}%↓ 판정 → "
+               f"다음 날 5일 최대 낙폭주 {PANIC_SLOTS}종목 (시총 {PANIC_PICK_TOP}위 안, 거래대금 "
+               f"{PANIC_PICK_MIN_VALUE / 1e8:,.0f}억↑), {PANIC_HOLD_DAYS}거래일 보유" if PANIC_ENABLED else "\n패닉 모드: 꺼짐")
+        )
     stop = f"{STOP_LOSS_PCT}%" if USE_STOP_LOSS else "없음"
     if INTRADAY_REENTRY:
         reentry = (f"장중 10분마다 ({REENTRY_START[:2]}:{REENTRY_START[2:]}"

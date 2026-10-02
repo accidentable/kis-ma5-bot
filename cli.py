@@ -5,7 +5,9 @@ cli.py — 로컬 실행 진입점
   python cli.py chatid     텔레그램 봇 확인 + 내 chat ID 조회
   python cli.py account    계좌 상품코드 진단 (APBK1271 오류 시)
   python cli.py universe   KOSPI100 유니버스 확인
-  python cli.py scan       시그널 스캔 (주문 없음)
+  python cli.py scan       시그널 스캔 / near_high 는 오늘 순위 (주문 없음)
+  python cli.py prep       개장 전 준비 1회 (near_high: 순위 계산 / closebet: 시가 매도)
+  (closebet 은 entry = 종가 매수, monitor = 시가 미체결 점검, close = 리포트)
   python cli.py entry      09:05 진입 작업 1회 실행
   python cli.py monitor    장중 감시 1회 실행
   python cli.py close      마감 정리 1회 실행
@@ -43,6 +45,7 @@ def cmd_check(args) -> int:
     from core.kis import auth, quotes, trading
 
     print("═" * 60)
+    print(f"환경: {'모의투자' if config.IS_MOCK else '실전'} (KIS_ENV={config.KIS_ENV}) | 주소: {config.KIS_BASE_URL}")
     print(config.summary())
     print("═" * 60)
 
@@ -79,12 +82,15 @@ def cmd_check(args) -> int:
 
     try:
         opened = quotes.is_open_day(date.today())
-        print(f"✅ 휴장일 조회 정상 — 오늘({date.today()}) 개장: {'예' if opened else '아니오'}")
+        how = "평일 여부로 판정 — 모의투자는 휴장일 조회 미지원" if config.IS_MOCK else "휴장일 조회 정상"
+        print(f"✅ {how} — 오늘({date.today()}) 개장: {'예' if opened else '아니오'}")
     except Exception as e:
         print(f"⚠️ 휴장일 조회 실패(주말 판정으로 대체됨): {e}")
 
     if config.DRY_RUN:
         print("\n⚠️ DRY_RUN=true — 주문은 전송되지 않는다. 실매매하려면 .env 에서 false 로 바꿔라.")
+    elif config.IS_MOCK:
+        print("\n🟡 DRY_RUN=false — 모의투자 계좌로 주문이 나간다.")
     else:
         print("\n🔴 DRY_RUN=false — 실제 주문이 나간다.")
     return 0
@@ -218,7 +224,14 @@ def cmd_account(args) -> int:
 
 
 def cmd_universe(args) -> int:
+    import config
     from core import universe
+    if config.STRATEGY == "near_high":
+        stocks = universe.get_large_universe(config.NH_UNIVERSE_TOP, force=args.force)
+        print(f"코스피+코스닥 시총 상위 {len(stocks)}종목")
+        for i, s in enumerate(stocks, 1):
+            print(f"{i:3d}. {s['ticker']} {s['name']:<16} {s.get('market', ''):<6} 시총 {s['marcap']:>12,.0f}억")
+        return 0
     stocks = universe.get_universe(force=args.force)
     print(f"KOSPI100 매매대상 {len(stocks)}종목")
     for i, s in enumerate(stocks, 1):
@@ -228,27 +241,191 @@ def cmd_universe(args) -> int:
 
 def cmd_scan(args) -> int:
     """수동 스캔. 항상 일봉을 새로 받는다 — 당일 캐시가 옛 코드로 만들어졌을 수 있다."""
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        ct = contest.get()
+        if ct.get("hist_date") != date.today().isoformat():
+            contest.prep(force=True); ct = contest.get()
+        snaps, fail = contest.snapshots(ct)
+        print(contest.scan_text(contest.decide(snaps, ct), snaps_n=len(snaps), fail=len(fail)))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        cands, stats = closebet.candidates()
+        print(closebet.regime_on()[1])
+        print(f"거래대금 순위 {stats.get('rank')} → 후보 {len(cands)} | 탈락 {stats.get('rejects')}")
+        for c in cands:
+            print(f"  {c['name']}({c['ticker']}) {c['price']:,.0f}원 {c['change_pct']:+.1f}% IBS {c['ibs']:.2f} 거래대금 {c['value'] / 1e8:,.0f}억")
+        return 0
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        ranked, stats = rotation.build_ranking()
+        print(rotation.format_ranking(ranked, stats, limit=20))
+        return 0
     from jobs import scan as scan_job
     ranked, stats = scan_job.scan(use_cache=False)
     print(scan_job.format_result(ranked, stats, limit=20))
     return 0
 
 
+def cmd_prep(args) -> int:
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.prep(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.sell_open(force=args.force))
+        return 0
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.prep(force=args.force))
+    else:
+        from jobs import prep
+        print(prep.run(force=args.force))
+    return 0
+
+
 def cmd_entry(args) -> int:
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.buy_close(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.buy_close(force=args.force))
+        return 0
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.entry(force=args.force))
+        return 0
     from jobs import entry
     print(entry.run(force=args.force))
     return 0
 
 
 def cmd_monitor(args) -> int:
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.check_open(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.check_open(force=args.force))
+        return 0
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.monitor(force=args.force))
+        return 0
     from jobs import monitor
     print(monitor.run(force=args.force))
     return 0
 
 
+def cmd_sellopen(args) -> int:
+    """08:45 장전 동시호가 매도 1회 (대회 모드 · 종가 베팅)."""
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.sell_open(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.sell_open(force=args.force))
+        return 0
+    print("이 전략엔 장전 매도 작업이 없다")
+    return 1
+
+
 def cmd_close(args) -> int:
+    import config
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        print(contest.evaluate(force=args.force))
+        return 0
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        print(closebet.report(force=args.force))
+        return 0
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        print(rotation.close(force=args.force))
+        return 0
     from jobs import close
     print(close.run(force=args.force))
+    return 0
+
+
+def cmd_panic(args) -> int:
+    """급락 판정 1회 (PANIC_ENABLED 가 꺼져 있어도 돌려 볼 수 있다. 급락일이면 다음 개장에 진입 대기로 저장된다)."""
+    from jobs import panic
+    r = panic.scan(force=True)
+    print({k: v for k, v in r.items() if k != "candidates"})
+    print(panic.status_line() or panic.get())
+    return 0
+
+
+def _manual_call(fn, *a) -> int:
+    from core import manual
+    try:
+        print(getattr(manual, fn)(*a))
+    except ValueError as e:
+        print(f"⚠️ {e}")
+        return 1
+    return 0
+
+
+def cmd_buy(args) -> int:
+    return _manual_call("buy", args.ticker, args.price, args.qty)
+
+
+def cmd_sell(args) -> int:
+    return _manual_call("sell", args.ticker, args.price, args.qty)
+
+
+def cmd_bal(args) -> int:
+    return _manual_call("balance")
+
+
+def cmd_orders(args) -> int:
+    return _manual_call("orders")
+
+
+def cmd_cancel(args) -> int:
+    return _manual_call("cancel", args.target)
+
+
+def cmd_fills(args) -> int:
+    return _manual_call("fills")
+
+
+def cmd_progress(args) -> int:
+    return _manual_call("progress")
+
+
+def cmd_manual(args) -> int:
+    """수동 매매 전용 상주 실행 — 자동매매 스케줄 없이 텔레그램 명령(/buy /sell ...)만 받는다."""
+    import signal
+    import threading
+
+    import config
+    from core import manual, notify, poller
+
+    notify.set_commands()
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    notify.send("🖐 수동 매매 모드 시작 (자동매매 꺼짐)\n" + ("DRY_RUN — 주문 안 나감\n\n" if config.DRY_RUN else "\n")
+                + manual.HELP)
+    try:
+        poller.run(stop)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        notify.send("🛑 수동 매매 모드 종료")
     return 0
 
 
@@ -270,7 +447,6 @@ def cmd_serve(args) -> int:
 
     import config
     from core import notify, poller
-    from jobs import close, entry, monitor, prep
 
     log = logging.getLogger("serve")
     sched = BlockingScheduler(timezone="Asia/Seoul")
@@ -287,6 +463,69 @@ def cmd_serve(args) -> int:
 
     def _hm(hhmm: str) -> tuple[int, int]:
         return int(hhmm[:2]), int(hhmm[2:])
+
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        for job_id, name, fn, hhmm in (("cb_sell", "시가 매도", closebet.sell_open, config.CB_SELL_TIME),
+                                        ("cb_check", "시가 미체결 점검", closebet.check_open, config.CB_CHECK_TIME),
+                                        ("cb_buy", "종가 매수", closebet.buy_close, config.CB_BUY_TIME),
+                                        ("cb_report", "마감 리포트", closebet.report, "1540")):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
+    elif config.STRATEGY == "contest":
+        from jobs import contest
+        for job_id, name, fn, hhmm in (("ct_prep", "대회 준비", contest.prep, config.CT_PREP_TIME),
+                                        ("ct_sell", "시가 매도", contest.sell_open, config.CT_SELL_TIME),
+                                        ("ct_check", "시가 미체결 점검", contest.check_open, config.CT_CHECK_TIME),
+                                        ("ct_scan", "판정", contest.scan, config.CT_SCAN_TIME),
+                                        ("ct_buy", "종가 매수", contest.buy_close, config.CT_BUY_TIME),
+                                        ("ct_eval", "마감 판정", contest.evaluate, config.CT_EVAL_TIME)):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
+    elif config.STRATEGY == "near_high":
+        from jobs import rotation
+        for job_id, name, fn, hhmm in (("prep", "순위 계산", rotation.prep, config.NH_PREP_TIME),
+                                        ("entry", "교체 매매", rotation.entry, config.NH_ENTRY_TIME)):
+            h, mi = _hm(hhmm)
+            sched.add_job(_wrap(name, fn), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id=job_id, replace_existing=True)
+        sched.add_job(_wrap("감시", rotation.monitor),
+                      CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/10"),
+                      id="monitor", replace_existing=True)
+        sched.add_job(_wrap("마감", rotation.close), CronTrigger(day_of_week="mon-fri", hour=15, minute=15),
+                      id="close", replace_existing=True)
+        if config.PANIC_ENABLED:
+            from jobs import panic
+            h, mi = _hm(config.PANIC_SCAN_TIME)
+            sched.add_job(_wrap("급락 판정", panic.scan), CronTrigger(day_of_week="mon-fri", hour=h, minute=mi),
+                          id="panic_scan", replace_existing=True)
+    else:
+        _schedule_ma5(sched, _wrap, _hm)
+
+    # 텔레그램 명령 수신 (롱폴링) — 공개 엔드포인트가 필요 없다
+    notify.set_commands()
+    _, stop_poller = poller.start_thread()
+
+    notify.send("🤖 봇 시작\n" + config.summary())
+    log.info("스케줄러 시작 — Ctrl+C 로 종료")
+    try:
+        sched.start()
+    except (KeyboardInterrupt, SystemExit):
+        log.info("종료 신호 수신")
+    finally:
+        stop_poller.set()
+        notify.send("🛑 봇 종료")
+    return 0
+
+
+def _schedule_ma5(sched, _wrap, _hm) -> None:
+    """예전 MA5 돌파 전략 일정 (STRATEGY=ma5)."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    import config
+    from jobs import close, entry, monitor, prep
 
     ph, pm = _hm(config.PREP_TIME)
     sched.add_job(_wrap("준비", prep.run), CronTrigger(day_of_week="mon-fri", hour=ph, minute=pm),
@@ -305,24 +544,9 @@ def cmd_serve(args) -> int:
     sched.add_job(_wrap("마감", close.run), CronTrigger(day_of_week="mon-fri", hour=15, minute=15),
                   id="close", replace_existing=True)
 
-    # 텔레그램 명령 수신 (롱폴링) — 공개 엔드포인트가 필요 없다
-    notify.set_commands()
-    _, stop_poller = poller.start_thread()
-
-    notify.send("🤖 봇 시작\n" + config.summary())
-    log.info("스케줄러 시작 — Ctrl+C 로 종료")
-    try:
-        sched.start()
-    except (KeyboardInterrupt, SystemExit):
-        log.info("종료 신호 수신")
-    finally:
-        stop_poller.set()
-        notify.send("🛑 봇 종료")
-    return 0
-
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="한투 OpenAPI MA5 돌파 역발상 봇")
+    parser = argparse.ArgumentParser(description="한투 OpenAPI 자동매매 봇 (STRATEGY=near_high | closebet | ma5)")
     parser.add_argument("--force", action="store_true", help="휴장일 체크를 건너뛴다")
     parser.add_argument("--reset-webhook", action="store_true",
                         help="chatid 실행 시 기존 텔레그램 웹훅을 해제한다")
@@ -334,15 +558,34 @@ def main() -> int:
         ("chatid", cmd_chatid, "텔레그램 봇 확인 + 내 chat ID 조회"),
         ("account", cmd_account, "계좌 상품코드 진단"),
         ("universe", cmd_universe, "유니버스 확인"),
-        ("scan", cmd_scan, "시그널 스캔 (주문 없음)"),
+        ("scan", cmd_scan, "시그널 스캔 / 순위 (주문 없음)"),
+        ("prep", cmd_prep, "개장 전 준비 1회"),
         ("entry", cmd_entry, "진입 작업 1회"),
         ("monitor", cmd_monitor, "장중 감시 1회"),
         ("close", cmd_close, "마감 정리 1회"),
+        ("panic", cmd_panic, "시장 급락 판정 1회 (패닉 모드)"),
+        ("sellopen", cmd_sellopen, "장전 동시호가 매도 1회 (대회 · 종가 베팅)"),
         ("status", cmd_status, "보유 현황"),
         ("serve", cmd_serve, "스케줄러 상주 실행"),
     ]:
         p = sub.add_parser(name, help=help_text)
         p.set_defaults(func=fn)
+
+    p = sub.add_parser("buy", help="수동 매수: buy 종목코드 가격 수량|금액  예) buy 005930 71500 10")
+    p.add_argument("ticker"); p.add_argument("price", help="71500 · 시장가(m, 0)")
+    p.add_argument("qty", help="10 (주) · 1000만 · 5천만원 · 1억")
+    p.set_defaults(func=cmd_buy)
+    p = sub.add_parser("sell", help="수동 매도: sell 종목코드 가격 [수량|all]  예) sell 005930 72000 5")
+    p.add_argument("ticker"); p.add_argument("price", help="72000 · 시장가(m, 0)")
+    p.add_argument("qty", nargs="?", default=None, help="생략/all = 전량")
+    p.set_defaults(func=cmd_sell)
+    p = sub.add_parser("cancel", help="미체결 취소: cancel 주문번호|all")
+    p.add_argument("target", nargs="?", default="all")
+    p.set_defaults(func=cmd_cancel)
+    for name, fn, help_text in [("bal", cmd_bal, "잔고 · 예수금"), ("orders", cmd_orders, "미체결 주문"),
+                                ("fills", cmd_fills, "오늘 체결"), ("progress", cmd_progress, "대회 조건 진행"),
+                                ("manual", cmd_manual, "수동 매매 전용 상주 실행 (텔레그램 /buy /sell 만)")]:
+        sub.add_parser(name, help=help_text).set_defaults(func=fn)
 
     args = parser.parse_args()
     setup_logging(logging.DEBUG if args.verbose else logging.INFO)

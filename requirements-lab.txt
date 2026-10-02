@@ -1,0 +1,4 @@
+# backtest/lab 전용 (봇 실행에는 필요 없음)
+numpy
+pandas
+pyarrow
