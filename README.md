@@ -297,6 +297,9 @@ python cli.py close --force
 
 ### A. 서버 1대 상주 — 권장 (네이버 클라우드 Micro Server 등)
 
+> 서버 자체를 코드로 만들려면 `infra/terraform/` 을 봐라 (VPC·ACG·서버·공인 IP·`/data` 디스크 → 첫 부팅 자동 설정).
+> `make apply` → `make env` → `make bootstrap` 세 번이면 봇이 뜬다. 아래는 이미 있는 서버에 손으로 올리는 방법이다.
+
 ```bash
 python cli.py serve
 ```

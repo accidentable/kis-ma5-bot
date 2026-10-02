@@ -1,0 +1,9 @@
+# 복사해서 terraform.tfvars 로 쓴다 (git 에 안 올라감).
+ssh_public_key   = "ssh-ed25519 AAAA... you@laptop"
+ssh_allowed_cidr = "0.0.0.0/0"   # 집 IP 로 좁히는 걸 권장: "1.2.3.4/32"
+# zone             = "KR-2"
+# server_spec_code = "s2-g3a"
+# root_disk_gb     = 20
+# data_disk_gb     = 20
+# repo_branch      = "backtest-universe-iofw7v"
+# bot_mode         = "serve"

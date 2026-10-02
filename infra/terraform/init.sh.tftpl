@@ -1,0 +1,74 @@
+#!/bin/bash
+# ma5-bot 서버 첫 부팅 초기화 (NCP init script). root 로 한 번만 돈다.
+# 로그: /var/log/ma5-init.log
+set -euxo pipefail
+exec > >(tee -a /var/log/ma5-init.log) 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+echo "== 1. SSH 공개키, 비밀번호 로그인 차단 =="
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+grep -qxF '${ssh_public_key}' /root/.ssh/authorized_keys 2>/dev/null || echo '${ssh_public_key}' >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+cat > /etc/ssh/sshd_config.d/90-ma5.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+SSHD
+systemctl reload ssh || systemctl reload sshd || true
+
+echo "== 2. 시간대 KST =="
+timedatectl set-timezone Asia/Seoul
+
+echo "== 3. /data (추가 블록 스토리지) =="
+# 루트 디스크가 아닌, 파티션 없는 두 번째 디스크를 찾는다. 블록 스토리지가 서버보다 늦게 붙으므로 기다린다.
+DATA_DEV=""
+for i in $(seq 1 60); do
+  DATA_DEV=$(lsblk -dnpo NAME,TYPE | awk '$2=="disk"{print $1}' | while read -r d; do
+    [ "$(lsblk -no MOUNTPOINTS "$d" | grep -c .)" -eq 0 ] && echo "$d" && break; done)
+  [ -n "$DATA_DEV" ] && break
+  sleep 5
+done
+if [ -n "$DATA_DEV" ]; then
+  if ! blkid "$DATA_DEV" >/dev/null; then mkfs.ext4 -q -L data "$DATA_DEV"; fi
+  mkdir -p /data
+  UUID=$(blkid -s UUID -o value "$DATA_DEV")
+  grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab
+  mountpoint -q /data || mount /data
+  echo "== 4. 스왑 4G on /data =="
+  if [ ! -f /data/swapfile ]; then
+    fallocate -l 4G /data/swapfile && chmod 600 /data/swapfile && mkswap /data/swapfile
+    echo "/data/swapfile none swap sw 0 0" >> /etc/fstab
+  fi
+  swapon -a || true
+else
+  echo "!! 추가 디스크를 못 찾았다. /data 는 루트 디스크에 만든다."
+  mkdir -p /data
+fi
+mkdir -p /data/lab
+
+echo "== 5. 패키지 =="
+apt-get update -qq
+apt-get install -y -qq python3 python3-venv python3-pip git curl
+
+echo "== 6. 저장소 클론 =="
+if [ ! -d /opt/ma5-bot/.git ]; then
+  git clone --branch '${repo_branch}' '${repo_url}' /opt/ma5-bot
+fi
+# 백테스트 데이터는 /data/lab 에 두고 저장소 안에서는 심볼릭 링크로 본다.
+mkdir -p /opt/ma5-bot/data
+[ -e /opt/ma5-bot/data/lab ] || ln -s /data/lab /opt/ma5-bot/data/lab
+
+echo "== 7. 배포 스크립트 =="
+cat > /usr/local/bin/ma5-deploy <<'DEPLOY'
+${deploy_script}
+DEPLOY
+sed -i 's#__DEFAULT_BRANCH__#${repo_branch}#' /usr/local/bin/ma5-deploy
+chmod +x /usr/local/bin/ma5-deploy
+
+echo "== 8. venv + systemd (setup.sh) =="
+# .env 가 아직 없으므로 setup.sh 는 .env.example 을 복사하고 5단계에서 멈춘다 (exit 0).
+# make env 로 .env 를 넣고 make bootstrap 을 돌리면 점검·서비스 등록까지 끝난다.
+cd /opt/ma5-bot
+BOT_MODE='${bot_mode}' APP_DIR=/opt/ma5-bot bash infra/ncp/setup.sh || true
+
+echo "== init done $(date) =="
