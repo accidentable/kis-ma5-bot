@@ -9,6 +9,7 @@ core/kis/auth.py — 접근토큰 발급 / 캐싱
 캐시 백엔드:
   file  로컬 JSON  — 단일 프로세스/로컬 테스트용
   ssm   SSM Parameter Store (SecureString) — 람다 간 공유용
+실전/모의 토큰은 서로 통하지 않으므로 캐시를 따로 둔다 (kis_token.json / kis_token_mock.json).
 """
 from __future__ import annotations
 
@@ -25,9 +26,6 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_TOKEN_URL = f"{config.KIS_BASE_URL}/oauth2/tokenP"
-_REVOKE_URL = f"{config.KIS_BASE_URL}/oauth2/revokeP"
-_HASHKEY_URL = f"{config.KIS_BASE_URL}/uapi/hashkey"
 
 # 만료 1시간 전에 미리 갱신
 _REFRESH_MARGIN_SEC = 3600
@@ -39,7 +37,7 @@ _mem: dict[str, float | str] = {"token": "", "expires_at": 0.0}
 # ── 캐시 백엔드 ───────────────────────────────────────────────
 def _file_path() -> str:
     os.makedirs(config.DATA_DIR, exist_ok=True)
-    return os.path.join(config.DATA_DIR, "kis_token.json")
+    return os.path.join(config.DATA_DIR, "kis_token_mock.json" if config.IS_MOCK else "kis_token.json")
 
 
 def _cache_read() -> tuple[str, float]:
@@ -89,7 +87,7 @@ def _issue() -> tuple[str, float]:
         "appkey": config.KIS_APP_KEY,
         "appsecret": config.KIS_APP_SECRET,
     }
-    resp = requests.post(_TOKEN_URL, json=body, timeout=15)
+    resp = requests.post(f"{config.KIS_BASE_URL}/oauth2/tokenP", json=body, timeout=15)
 
     if resp.status_code != 200:
         # 한투는 발급 제한/키 오류를 본문에 담아 403 으로 준다.
@@ -152,7 +150,7 @@ def get_hashkey(body: dict) -> str:
         "appkey": config.KIS_APP_KEY,
         "appsecret": config.KIS_APP_SECRET,
     }
-    resp = requests.post(_HASHKEY_URL, json=body, headers=headers, timeout=10)
+    resp = requests.post(f"{config.KIS_BASE_URL}/uapi/hashkey", json=body, headers=headers, timeout=10)
     resp.raise_for_status()
     h = resp.json().get("HASH", "")
     if not h:

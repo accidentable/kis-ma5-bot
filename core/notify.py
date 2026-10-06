@@ -40,6 +40,8 @@ def _call(method: str, payload: dict) -> Optional[dict]:
 def send(text: str, chat_id: Optional[int] = None) -> None:
     """허용된 chat_id 전체(또는 지정한 하나)에게 메시지를 보낸다."""
     targets = [chat_id] if chat_id is not None else config.TELEGRAM_ALLOWED_CHAT_IDS
+    if config.BOT_LABEL:
+        text = f"[{config.BOT_LABEL}] {text}"
     if not targets:
         logger.info("[알림 대상 없음] %s", text.replace("\n", " / "))
         return
@@ -68,5 +70,13 @@ def set_commands() -> None:
         {"command": "config", "description": "현재 설정 확인"},
         {"command": "pause", "description": "자동매매 일시정지"},
         {"command": "resume", "description": "자동매매 재개"},
-        {"command": "sell", "description": "강제 청산 (/sell 종목코드)"},
+        {"command": "target", "description": "목표 수익률 보기/바꾸기 (/target 70, /target off)"},
+        {"command": "buy", "description": "수동 매수 (/buy 종목 가격 수량)"},
+        {"command": "sell", "description": "수동 매도 (/sell 종목 가격 [수량])"},
+        {"command": "bal", "description": "잔고 · 예수금"},
+        {"command": "orders", "description": "미체결 주문"},
+        {"command": "cancel", "description": "미체결 취소 (/cancel 주문번호|all)"},
+        {"command": "fills", "description": "오늘 체결"},
+        {"command": "progress", "description": "대회 조건 진행"},
+        {"command": "close", "description": "자동매매 포지션 강제 청산 (/close 종목코드)"},
     ]})

@@ -36,29 +36,70 @@ def _guard(name: str, fn, event):
         return _ok({"job": name, "error": f"{type(e).__name__}: {e}"})
 
 
+def _closebet() -> bool:
+    import config
+    return config.STRATEGY == "closebet"
+
+
+def _near_high() -> bool:
+    import config
+    return config.STRATEGY == "near_high"
+
+
 def prep_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("시가 매도", closebet.sell_open, event)
+    if _near_high():
+        from jobs import rotation
+        return _guard("순위 계산", rotation.prep, event)
     from jobs import prep
     return _guard("준비", prep.run, event)
 
 
 def premarket_handler(event, context):
+    if _near_high():
+        return _ok({"job": "프리마켓", "skipped": "near_high 는 프리마켓 진입 없음"})
     from jobs import prep
     return _guard("프리마켓 분할진입", prep.premarket_entry, event)
 
 
 def entry_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("시가 미체결 점검", closebet.check_open, event)
+    if _near_high():
+        from jobs import rotation
+        return _guard("교체 매매", rotation.entry, event)
     from jobs import entry
     return _guard("진입", entry.run, event)
 
 
 def monitor_handler(event, context):
+    if _closebet():
+        return _ok({"job": "감시", "skipped": "closebet 은 장중 감시 없음"})
+    if _near_high():
+        from jobs import rotation
+        return _guard("감시", rotation.monitor, event)
     from jobs import monitor
     return _guard("감시", monitor.run, event)
 
 
 def close_handler(event, context):
+    if _closebet():
+        from jobs import closebet
+        return _guard("종가 매수", closebet.buy_close, event)
+    if _near_high():
+        from jobs import rotation
+        return _guard("마감", rotation.close, event)
     from jobs import close
     return _guard("마감", close.run, event)
+
+
+def panic_scan_handler(event, context):
+    """시장 급락 판정 (PANIC_SCAN_TIME, 장 마감 뒤). PANIC_ENABLED=false 면 아무것도 안 한다."""
+    from jobs import panic
+    return _guard("급락 판정", panic.scan, event)
 
 
 def webhook_handler(event, context):

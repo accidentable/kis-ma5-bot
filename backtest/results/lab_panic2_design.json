@@ -1,0 +1,1052 @@
+{
+ "hypotheses": [
+  {
+   "id": "MPT1_vol_stress_trigger",
+   "family": "market_panic_trigger",
+   "definition": "Signal at close t. r_m = I['mkt_ret1']. Stress ratio S_t = sqrt(mean(r_m[t-4..t]^2)) / sqrt(mean(r_m[t-250..t-1]^2)). Market drawdown DD60_t = I['mkt'][t] / max(I['mkt'][t-59..t]) - 1. Trigger_t = (S_t >= theta) AND (DD60_t <= -delta). Candidates: caprank<=200, 1000<=raw<=300000, val20>=1e9. Pick the 2 names with the most negative ret5_t (5-day reversal). Use run_hybrid semantics from panic.py: at open t+1 sell base holdings and buy the 2 names (skip if open >= prev close*1.295). Hold H trading days and sell at close t+H; the +10% surge close-exit stays active. Then return to the base bot. If Trigger is still true the day after panic mode ends, re-entry is allowed. Report (a) an event study per trigger day: net (0.35% cost) close(t+5)/open(t+1)-1 of selected names, minus the same for EW top-200; (b) contest months IS/VAL/TEST vs the base bot and vs the existing mkt_ret1<=-4% trigger; (c) trigger days per year.",
+   "params": "theta in {2.0, 3.0}; delta in {8%, 15%}; H in {5, 10}",
+   "rationale": "Nagel (2012, RFS, 'Evaporating Liquidity', https://www.nber.org/papers/w17653): returns to short-term reversal (liquidity provision) are strongly time-varying and forecast by VIX (+5.4bp per VIX point over 5 days). Hameed-Kang-Viswanathan (2010 JF, https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.2009.01529.x): contrarian profits are 1.18%/week when conditioned on large negative market returns, because margin-constrained intermediaries are forced to liquidate. The one-day -4% rule misses grinding multi-day liquidations and fires on the first day of a crisis. A realized-vol x drawdown state marks when liquidity providers are scarce, and it gives about 3-5x more events than 61 days, so statistics are better.",
+   "expected": "On trigger days, top-200 5-day losers beat top-200 EW by +1 to +2% over 5 days (vs about +0.2% unconditionally). The gap should grow with theta. Contest mean is +0.3 to +0.8%p above base in both IS and VAL, with P(month<=-10%) no more than base+2pp. Risk: delta=8% fires repeatedly in the 2022 bear and loses there.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "MPT2_confirmation_hammer_trigger",
+   "family": "market_panic_trigger",
+   "definition": "EW IBS_t = mean over liquid stocks (val20>=3e9, raw>=1000, h>l) of (c-l)/(h-l). DD20_t = mkt[t]/max(mkt[t-19..t]) - 1. P5_t = any(mkt_ret1[t-5..t-1] <= -3%). Triggers are evaluated at close t. C0 (baseline): mkt_ret1[t] <= -4%. C1 (follow-through): P5_t AND DD20_{t-1} <= -delta AND mkt_ret1[t] >= +2%, first qualifying day per episode only. C2 (market hammer): mkt_ret1[t] <= -3% AND EW IBS_t >= 0.5 AND DD20_t <= -delta, meaning the index closed well off its intraday low. Selection is fixed: caprank<=200, raw<=300k, most negative ret5_t. Entry at open t+1; for C1 also test closing-auction entry at close t. Hold 5 days and exit at close, inside the same hybrid overlay as panic.py.",
+   "params": "trigger in {C0, C1, C2}; delta in {8%, 12%}; C1 entry in {close t, open t+1}",
+   "rationale": "VAL failed because the first -4% days in 2020-03 and 2022 were followed by more panic waves. At the market level, two signals mean the forced sellers are done: a day that closes far off the lows (buyers absorbed the capitulation), or the first strong up-day after a panic (margin calls cleared through the D+2 opening auctions). The trade gives up the first slice of the rebound in exchange for fewer falling-knife entries. This differs from the stock-level capitulation filter (knife D6), which failed because single-stock high volume signals information.",
+   "expected": "C1/C2 fire about 25-40 times in 16 years. Their per-event 5-day mean is 0.5-1%p below C0, but the hit rate is >= 75%. In VAL, panic-month average returns rise to >= 0% (vs -2.7% for C0), and contest P(month<=-10%) in VAL falls back to base (about 5%). If C1 at close t beats open t+1, the up-day continues overnight.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "MPS1_residual_vs_beta_selection",
+   "family": "market_panic_selection",
+   "definition": "Rolling 120-day market model on window t-120..t-1 (need >=100 valid days): beta_i = cov(ret1_i, mkt_ret1)/var(mkt_ret1), computable with rolling means of x, y, xy, x^2. Residual e_i,s = ret1_i,s - beta_i*mkt_ret1_s. sig_i = std of e_i over the window. On a panic day t (mkt_ret1[t] <= -4%), candidates are caprank<=200, 1000<=raw<=300k, val20>=1e9, and w-day windows s = t-w+1..t. S1 (current K2): rank by most negative ret over w days. S2 (overshoot beyond beta): rank by most negative z = sum_s e_i,s / (sig_i*sqrt(w)). S3 (levered market bet): rank by highest beta_i among names whose w-day return is <= the candidate median. Enter both slots at open t+1, hold H, exit at close. Event study: net raw return and market-adjusted return (minus beta_i x EW market over the hold) per selected name, by year and by episode.",
+   "params": "selection in {S1, S2, S3}; window w in {1, 3} days; H in {5, 21}",
+   "rationale": "Da-Liu-Schaumburg (2014, Management Science, https://pubsonline.informs.org/doi/10.1287/mnsc.2013.1766): the part of a return not explained by fundamentals or factors reverses, with residual-reversal profits about 3x the raw strategy; liquidity shocks drive the long side. Hameed-Mian (2015 JFQA): non-informational reversals are stronger after market declines. Ranking by raw decline mixes beta, which pays only if the market rebounds, with true overshoot. Separating the two shows whether the panic edge is a market rebound (S3 wins) or liquidity provision on overshoot (S2 wins, and should hold up in 2020/2022).",
+   "expected": "S2 earns +1 to +2% higher market-adjusted 5-day returns than S1, with smaller dispersion and more stable IS/VAL/TEST results. S3 has the highest raw mean in V-shaped episodes (2024-08, 2026) but the worst results in 2020-03 and 2022.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "SPT1_margin_call_D2_auction_timing",
+   "family": "stock_panic_trigger",
+   "definition": "Event (i,t) requires caprank<=1000, 1000<=raw<=300k, val20>=1e9, and either (a) market panic: mkt_ret1[t] <= -3% and ret1_i,t <= -7%, or (b) idiosyncratic: ret1_i,t <= -10% and mkt_ret1[t] > -3%. Margin-exposure proxy at t-1: MX = mean of cross-sectional percentile ranks (liquid universe on t-1) of ret60_{t-1}, turnover val20_{t-1}/cap_{t-1}, and max20_{t-1}, plus 0.1 if the market label at t-1 is KOSDAQ. Tercile cut-points are fixed on IS. Measure overnight gaps g_k = o_{t+k}/c_{t+k-1} - 1 for k=1,2,3. Measure net returns to a common endpoint (close t+6 and close t+21) from entries O1=open t+1, C1=close t+1, O2=open t+2, C2=close t+2. Tradable rule: for top-MX events, if ret1_{t+1} < 0 (known at close t+1), buy in the t+2 opening auction. Hold to close t+6 with the surge exit active; run in signal mode with 2 slots and as a panic-overlay entry-timing variant.",
+   "params": "entry in {O1, O2, C2}; MX tercile in {top, bottom}; event type in {(a) market panic, (b) idiosyncratic}",
+   "rationale": "Korean margin mechanics: when a 신용융자 account falls below the 140% 담보비율 at the close and is not topped up by D+1, the broker auto-sells in the D+2 pre-open auction (08:30-09:00) with 하한가-based or best-price orders; 미수 accounts are sold at D+3 (Eugene https://www.eugenefn.com/serv/svlo/svlo107p.do, KB https://kbthink.com/stock/stock-forced-liquidation.html). So forced selling hits the open of t+2, not t+1, and it concentrates in retail-levered names: high run-up, high turnover, KOSDAQ. The 2026 crash showed this at scale: record leverage and 1.2M accounts hit by margin calls (https://fortune.com/2026/07/18/ai-stock-outlook-margin-call-korea-liquidity-leverage-rebound/). This would explain the negative median of knife entries at O1: the second forced-selling wave arrives after entry.",
+   "expected": "For the top-MX tercile, mean g2 is 0.5-1.5%p more negative than for the bottom tercile, and even more so when ret1_{t+1}<0. O2 entry beats O1 by +0.5 to +1.5%p to the common endpoint for top-MX, with no gain (or a loss from missing the rebound) for bottom-MX large caps. The effect is strongest in the deleveraging episodes (2020-03, 2024-08, 2026).",
+   "lens": "microstructure"
+  },
+  {
+   "id": "SPT2_quiet_idiosyncratic_drop",
+   "family": "stock_panic_trigger",
+   "definition": "Universe at t: caprank<=300, 1000<=raw<=300k, val20>=3e9. Turnover20 = val20_{t-1}/cap_{t-1} and vol60_{t-1} must both be below the universe median on t-1 (quiet large caps). Take beta_i and sig_i from a 120-day market model on window t-120..t-1 against mkt_ret1. Event at close t: z_t = (ret1_t - beta_i*mkt_ret1_t)/sig_i <= -theta, AND ret1_t >= -15% (drops catastrophic news and limit-downs), AND volume ratio VR = val_t/val20_{t-1} <= V, AND mkt_ret1_t > -2% (stock-specific, not a market panic). Rank by z, most negative first. Test entry at close t (closing auction) and at open t+1. Exit at close after H days, surge exit active. Outputs: (a) event study (net 0.35% mean/median/hit rate) split into VR buckets <=2, 2-4, >4; (b) contest sims: signal mode 2 slots standalone, and 1 knife slot + 1 base-bot slot.",
+   "params": "theta in {2.5, 3.5}; V in {2, 4}; H in {5, 10}",
+   "rationale": "Medhat-Schmeling (2022 RFS, https://academic.oup.com/rfs/article-abstract/35/3/1480/6286969): short-term reversal exists only in low-turnover stocks, while high-turnover stocks show short-term momentum. That fits our findings: attention-stock knives have negative medians, capitulation volume is worse, and turnover and volatility are the strongest negative ICs. Da-Liu-Schaumburg: non-fundamental residual moves reverse. A quiet large cap that falls 3 sigma without a volume explosion is usually a liquidity event, not information: block sales (블록딜), index/ETF rebalancing, 선물옵션 만기, or fund exits (Korea evidence that reversals strengthen when institutions exit: https://www.tandfonline.com/doi/abs/10.1080/1540496X.2026.2617473). Korean evidence also shows reversal after shock days depends on shock-day volume (https://www.koreascience.kr/article/JAKO202308156805283.page).",
+   "expected": "Event 5-day net mean +0.5 to +1.2%, median >= 0, hit rate >= 52%, unlike attention knives. The VR>4 bucket is near zero or negative. There are thousands of events, so IS/VAL/TEST are each testable. As a 2-slot standalone contest strategy it lands near the EW market (about +1%/month) with P(<=-10%) <= 6%; the main gain is a better median.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "SPT3_sector_shock_vs_isolated_drop",
+   "family": "stock_panic_trigger",
+   "definition": "Join 2018 KSIC sectors; stocks without a label are excluded (static-label look-ahead is minor, so note it). For stock i on day t, peer return s_i,t = mean ret1 of same-sector stocks with val20>=1e9, excluding i (need >=3 peers), and idio_i,t = ret1_i,t - s_i,t. Events: ret1_i,t <= -D, caprank<=500, 1000<=raw<=300k, val20>=1e9, and mkt_ret1[t] > -3% (not a market panic). Group A (sector shock): s <= -D/2 and idio > -D/2. Group B (isolated drop): s > -1.5% and idio <= -D. Trade variant HM (Hameed-Mian): among caprank<=300, rel5_i = ret5_i - median ret5 of sector peers; require rel5 <= -10% and buy the 2 most negative at open t+1. All: entry at open t+1, exit at close after H days, surge exit active, net costs.",
+   "params": "D in {7%, 10%}; group in {A, B, HM-rel5}; H in {5, 21}",
+   "rationale": "Hameed-Mian (2015 JFQA, https://econpapers.repec.org/RePEc:cup:jfinqa:v:50:y:2015:i:1-2:p:89-117_00): intra-industry reversals are larger, persist over time, and hold in large liquid stocks. They are driven by non-informational order imbalance and are stronger after market declines. An isolated one-stock drop is more likely firm news (drift), while a sector-wide drop in Korea is often theme-ETF or margin flow. Our finding that buying sector strength loses suggests sector-level moves also reverse in Korea. The knife study pooled both kinds; this splits them.",
+   "expected": "Group A: 5-day mean +1 to +2% with median >= 0. Group B: negative 21-day returns (-1 to -3%, continuation). HM-rel5: modestly positive at 5-21 days. If both A and HM are positive, combine them: on sector-shock days, buy the member that overshot its sector the most.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "SPT4_gap_vs_grind_intraday_decomposition",
+   "family": "stock_panic_trigger",
+   "definition": "For drop events ret1_i,t <= -8% (caprank<=500, 1000<=raw<=300k, val20>=1e9), decompose the drop: gap g = o_t/c_{t-1} - 1, intraday d = c_t/o_t - 1, IBS = (c-l)/(h-l). Classes: G1 (gap-and-recover): g <= -5% and IBS >= 0.6. G2 (grind to close): g > -2% and IBS <= 0.15. G3 (locked limit-down): ret1 <= -(LIM - 0.5%) and c <= l*(1+1e-6), with LIM = 15% before 2015-06-15 and 30% after. Test entry at close t (closing auction) and at open t+1. Exits: next open (one night) or close t+5. Selection-filter variant for market panics: on mkt_ret1<=-4% days, rank caprank<=200 by ret1 as in K2 but require IBS_i >= 0.3, vs no filter.",
+   "params": "class in {G1, G2, G3}; entry in {close t, open t+1}; hold in {overnight to open t+1, 5 days}",
+   "rationale": "Korean evidence: overnight overreaction with daytime reversal, where individuals trade against overnight moves (Finance Research Letters 2023, https://www.sciencedirect.com/science/article/abs/pii/S1544612323001526), and stocks with high average overnight returns are overpriced (https://koreascience.or.kr/article/JAKO202013150643330.page). Selling concentrated overnight is sentiment and gets absorbed during the day. Continuous selling into the close (IBS near 0) means liquidation is unfinished and 반대매매 is pending next morning. A locked limit-down carries unfilled sell orders into the next session (price-limit spillover/magnet: https://www2.hawaii.edu/~rheesg/Published%20Papers/2009/An%20Analysis%20of%20the%20Magnet%20Effect.pdf).",
+   "expected": "G2 and G3 have negative next-open gaps (-1 to -3%) and negative 5-day returns (continuation). G1 has positive overnight and 5-day returns (+1 to +2%). On panic days, the IBS>=0.3 filter raises the K2 5-day mean by 0.5-1%p. Close-t entry is better for G1 and open t+1 (or later) for G2.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "MPS2_index_proxy_etf_in_panic",
+   "family": "market_panic_selection",
+   "definition": "Build point-in-time cap-weighted proxies with weights cap_{t-1}. K200p = top 200 by cap among stocks labelled KOSPI on t-1. KQ150p = top 150 by cap among stocks labelled KOSDAQ. Daily close-to-close return r_t = sum w*ret1; overnight r_ov,t = sum w*(o_t/c_{t-1} - 1). Synthetic ETF NAV: 1x = cumprod(1+r); 2x = cumprod(1 + 2r - 0.0064/250). Entry price at open = previous NAV*(1 + L*r_ov). ETF costs: fee 0.015% each side, slippage 0.05%, and no sell tax (domestic equity ETFs are exempt from 증권거래세). On the existing trigger (mkt_ret1<=-4%) and on the MPT1/MPT2 triggers, put both slots into the chosen proxy at open t+1, hold H days, then return to the base bot. Compare with K2 stocks and with the base-only bot per episode, and report which index rebounds more after panics.",
+   "params": "index in {K200p, KQ150p}; leverage L in {1x, 2x}; H in {5, 21}",
+   "rationale": "If the panic premium is a market-wide liquidity premium (HKV 2010; Nagel 2012), picking 2 stocks adds idiosyncratic noise plus the 0.2% tax. The index also holds mega-caps above the 300k price cap, which led the 2026 record rebound (https://www.cnbc.com/2026/07/31/south-korea-kospi-samsung-sk-hynix-meltdown-record-rebound.html). KOSDAQ is about 87% retail by volume and heavy on margin loans, so it should overshoot more but can keep falling. Caveats: the contest may forbid ETFs, and Korean retail buyers of leveraged ETPs need pre-education and a 기본예탁금 minimum. Check eligibility before relying on 2x.",
+   "expected": "1x index after -4% days: 5-day mean +1 to +2% with far lower dispersion than K2, and contest P(month<=-10%) falls. 2x roughly doubles both mean and tail. KQ150p has a higher mean in V-shaped episodes but is worse in 2020/2022. K2 stocks beat 1x only if they capture residual overshoot (compare with MPS1-S2).",
+   "lens": "microstructure"
+  },
+  {
+   "id": "RF1_panic_context_and_calendar",
+   "family": "risk_filter",
+   "definition": "Classify each trigger day t (mkt_ret1[t] <= -4%, and also the MPT1/MPT2 triggers) using information at t-1. R1 (shock from strength): mkt_on[t-1] is True AND mkt[t-1]/mkt[t-61] - 1 >= 0 AND no day with mkt_ret1 <= -3% in [t-L, t-1]. R2: everything else (already in a downtrend or drawdown, or clustered panics). Calendar tags from dates: MON = t is a Monday. POSTHOL = t is the first session after a closure of >= 2 consecutive weekdays (calendar gap to t-1 > 3 days, or > 1 day midweek excluding weekends). Policies: trade all triggers / R1 only / R2 only (R2 with the EX1 staggered entry). Report K2 event 5d/21d returns and contest months by class and by calendar tag.",
+   "params": "policy in {all, R1-only, R2-only}; L in {20, 60}; calendar split {MON or POSTHOL vs other} is report-only and not used for selection",
+   "rationale": "Isolated shocks after strength, such as 2024-08-05 (yen-carry unwind) and 2026-03-04, are deleveraging or liquidity events: forced sellers leave and prices snap back. Panics inside a downtrend (the first 2020-03 days, the 2022 rate bear, the 2011-08/09 cluster) are fundamental repricing with repeated waves. Choe-Kho-Stulz (1999 JFE, https://www.sciencedirect.com/science/article/abs/pii/S0304405X99000379) found the Korean market absorbed large foreign sales quickly, with no negative abnormal returns afterwards. Daniel-Moskowitz (2016, 'Momentum Crashes') shows panic states have high vol and option-like, badly timed rebounds. Monday and post-holiday panics compress several days of global news into one opening auction, which fits the Korean overnight-overreaction evidence.",
+   "expected": "R1 events: K2 5-day mean +3 to +6% with >= 80% positive. R2 events: mean near 0 with large dispersion, and they carry all of VAL's losses. R1-only improves the VAL contest mean over trading all panics and keeps the TEST gain. But there are only about 15-25 R1 days, so judge it with the VAL1 episode tests. MON/POSTHOL panics rebound about 1-2%p more.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "EX1_staggered_entry_market_recovery_exit",
+   "family": "exit_rule",
+   "definition": "Overlay on the 2-slot panic hybrid. First trigger day t0. Tranche 1: at open t0+1, sell the base holding with the lower c/hi250 at t0 and buy the top panic name (K2 or MPS1-S2 rank). Tranche 2: buy the next panic name at the open after the first of: (a) a new trigger day t with mkt[t] <= mkt[t0]*(1-g), or (b) t0+3 if no new trigger. Each panic position exits at close on the first of: (i) market recovery: mkt[t] >= mkt_low + f*(mkt_pre - mkt_low), where mkt_pre = max(mkt[t0-20..t0-1]) and mkt_low = min(mkt[t0..t]); (ii) the stock's ret1 >= +10% (surge exit); (iii) Hmax days held; (iv) market stop, only after tranche 2 is filled: mkt[t] <= min(mkt[t0..t-1])*0.93, executed at close with no intraday stock stops. After exit, return to the base bot.",
+   "params": "f in {0.5, 1.0}; g in {5%, 10%}; Hmax in {10, 21}",
+   "rationale": "VAL losses came from a full-size entry on the first wave of multi-wave panics (2020-03, 2022). Staggering spreads entry across the forced-selling waves (D+2/D+3 반대매매 auctions, repeat panic days). Exits tied to the market's recovery harvest a premium that is market-level (Nagel; HKV) rather than using an arbitrary 5 days. Stock-level intraday stops in panics fill at the worst prints and cost an extra 0.2%.",
+   "expected": "VAL panic-month mean improves from -2.7% toward 0% to +2%. TEST panic months give back 1-2%p of the +8.7%. Overall contest P(month<=-10%) is <= base. f=0.5 has a higher hit rate and shorter holds; f=1.0 has a higher mean in V-shaped episodes.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "VAL1_episode_level_inference",
+   "family": "validation",
+   "definition": "Cluster all trigger days into episodes: trigger days less than G trading days apart belong to one episode (about 20-30 episodes in 2010-2026 for the -4% rule). For each configuration, compare the panic hybrid with the base bot on identical contest start dates. (1) Per-episode delta = mean monthly return difference over starts whose 21-day window contains the episode. (2) Leave-one-episode-out and leave-top-2-episodes-out means of the overall monthly delta. (3) Episode block bootstrap: 10,000 resamples of episodes, with non-panic months resampled separately, giving a 90% CI of the mean monthly delta. (4) Placebo: trigger the same overlay on random non-trigger days, with the same count per year (500 draws), and report the percentile of the real delta. (5) Sign test: share of episodes with positive delta. Also report pooled 2011-2026 results, because IS, VAL and TEST each hold only about 3-8 episodes.",
+   "params": "G in {10, 20, 40}; bootstrap unit in {episode, calendar year}; placebo matching in {same year, same mkt_on state}",
+   "rationale": "The 61 trigger days collapse into a handful of episodes, and 17 fall in 2026 alone. The TEST +5.5% may be a single episode. Contest windows start every 1-3 days and overlap, so month-level statistics overstate significance. The episode is the honest unit of evidence for rare-event overlays.",
+   "expected": "A real effect shows positive delta in >= 60% of episodes, stays positive after leaving out the top 2 episodes, and beats >= 90% of placebos. Prior: the existing -4%/K2/5-day hybrid fails leave-top-2-out (driven by 2026 and 2020-03-19), while R1-filtered and confirmation variants (RF1, MPT2) are more likely to pass.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "MPS3_fallen_leaders_vs_junk_losers",
+   "family": "market_panic_selection",
+   "definition": "On a trigger day t (baseline -4%, MPT1 or MPT2), candidates are caprank<=200, 1000<=raw<=300k, val20>=1e9. Sets are defined at the pre-panic date p = t-k. Leaders L: c_p/hi250_p >= q and ret60_p > 0 (the base bot's own pool as of p). Junk losers J: mom12_1_p in the bottom quintile of the top-200 and c_p/hi250_p < 0.7. Within each set, rank by most negative ret3_t (the fall into the panic). Compare (L) fallen leaders, (J) junk losers, (K2) raw deepest ret1, and (B) do nothing: keep the base holdings through the panic. Entry at open t+1, hold 5 and 21 days, exit at close. Report results interacted with the RF1 classes (R1 vs R2).",
+   "params": "k in {5, 20}; q in {0.85, 0.95}; set in {L, J, K2}",
+   "rationale": "Two literatures predict opposite winners. (1) Deleveraging/crowding: forced sellers dump what they own most, i.e., crowded winners. The 2026 margin-call crash hit SK hynix and Samsung hardest, and they then rebounded at record pace. 52-week-high anchoring (George-Hwang 2004) supports leaders, so fallen leaders should rebound most. (2) Momentum crashes (Daniel-Moskowitz 2016): in panic states, past losers (high beta, junk) rebound far more when the market turns. The test also answers a practical question: should the bot simply hold its 52-week-high names through a panic (B) instead of switching?",
+   "expected": "L beats J by +1 to +3% over 21 days in R1 (shock-from-strength) episodes. J beats L in R2 bear-market rebounds (2020-03 bottom, 2022-10). So the best selection depends on context. If B is within 1%p of switching, panic names should only fill idle cash instead of replacing base holdings.",
+   "lens": "microstructure"
+  },
+  {
+   "id": "SP1_idio_sigma_shock",
+   "family": "stock_panic_trigger",
+   "definition": "Common notation, reused by SP2-SP7. All arrays are T x N and use the engine.py helpers. x_t = mkt_ret1 (EW liquid market). beta_t = [mean(x*ret1) - mean(x)*mean(ret1)] / [mean(x^2) - mean(x)^2], each mean from _roll_mean over 120 days then _shift(.,1), so the window is days t-120..t-1; need >=100 valid obs; clip to [0.2, 2.5]. idio_t = ret1_t - beta_t*x_t. sig_t = sqrt(_shift(_roll_mean(idio^2, 60), 1)), floor 0.008. z_t = idio_t / sig_t. U200_t = caprank_t<=200 & 1000<=raw_t<=300000 & val20_{t-1}>=3e9. MIDQ_t = 200<caprank_t<=800 & val20_{t-1}>=3e9 & raw_t<=300000 & turnover_{t-1} (val20/cap) below that day's median within MIDQ & never in the market's top-50 by daily trading value on days t-20..t-1 (not an attention stock). Calm market: x_t > -2%. EVENT on day t: universe & calm & z_t<=Z & ret1_t<=R & ret1_t>-20%. Rank same-day candidates by z ascending. Entry A: close_t (raw close x (1+slip)). Entry B: open_{t+1}, skipped if o_{t+1}>=1.295*c_t. Exit: close of the 5th trading day after entry. Report: event study net of about 0.35% round trip (1/3/5/10/21d), excess vs same-day EW forward return of the same universe, median, win rate; then contest sim in engine 'signal' mode, 2 slots, hold=5.",
+   "params": "Z in {-2.5, -3.5, -4.5}; R in {-4%, -7%}; entry in {close_t, open_t+1}; universe in {U200, MIDQ}. 24 cells. Ranking by caprank instead of z is one robustness check only.",
+   "rationale": "This is the clean stock-specific analogue of the market-panic result: a large drop explained neither by the market (beta-adjusted) nor by the stock's normal noise (scaled by its own residual volatility). A -5% day in a low-vol large cap counts like a -12% day in a biotech. The two universes separate large caps (index/ETF/arbitrage capital, most likely overshoot) from neglected mid caps (where liquidity providers are scarce) and exclude the attention stocks that already failed. Excluding market-panic days keeps this lens orthogonal to the market-panic sleeve.",
+   "expected": "Small positive. Top-200 5d net +0.3% to +1.0%, excess +0.3% to +0.8%, win rate 50-55%; stronger at Z=-4.5 but with fewer events. The 21d effect likely fades to 0 or negative (Cox & Peterson 1994: large one-day declines reverse over about 3 days, then underperform). Bremer & Sweeney (1991): about +2% over 2 days after -10% drops in large US firms. Short-term reversal: Jegadeesh (1990), Lehmann (1990); as a liquidity-provision premium: Nagel (2012). Reversal concentrates in less liquid names (Avramov, Chordia & Goyal 2006), so MIDQ should be larger gross but costlier. In-house IC: ret5 IC among top-200 is -0.035 (VAL) and -0.070 (TEST), so reversal exists among large caps. Kill if IS median <= 0 or excess t < 2.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP2_gap_vs_intraday_news_proxy",
+   "family": "stock_panic_trigger",
+   "definition": "Base: SP1 events with Z=-3, R=-4%, U200, calm market. gap_t = o_t/c_{t-1} - 1; intra_t = c_t/o_t - 1; ibs_t = (c_t - l_t)/(h_t - l_t) (0.5 if h=l); vr_t = val_t/val20_{t-1}. Mutually exclusive classes, all known at close t. NEWS-GAP: gap_t<=-G & intra_t<=+0.5% (gap down, no recovery). ABSORB: gap_t<=-G & intra_t>=+1% & vr_t>=2 (block-deal / overhang signature: supply dumped at a discount pre-open, then absorbed). INTRA-SELL: gap_t>=-1% & intra_t<=-I (normal open, sold down during the session), split into ibs_t<=0.2 (closed on the low) and ibs_t>0.2. OTHER: everything else. Entry close_t or open_{t+1}; exits at close after 5d and 21d. Per class report events/yr, net mean, median, win rate, and 5d/21d excess vs the U200 same-day mean.",
+   "params": "G in {3%, 5%}; I in {3%, 5%}; entry in {close_t, open_t+1}",
+   "rationale": "With no news feed, the timing of the drop is the best available proxy for information versus order flow. Earnings, most DART disclosures and overseas-peer news arrive outside hours and show up as an overnight gap. A gap the market does not retrace means the repricing was accepted. A gap retraced intraday on heavy volume looks like a one-off supply shock (block sale, overhang release). A sell-off from a normal open suggests program, fund or margin selling. Caveat: some Korean DART disclosures arrive intraday, so INTRA-SELL is contaminated and the test must show the split actually works.",
+   "expected": "NEWS-GAP: 5d about 0, 21d excess -1% to -3% (drift after informed shocks: Chan 2003; Savor 2012; Larson & Madura 2003; Tetlock 2010). ABSORB and INTRA-SELL with ibs>0.2: 5d +0.5% to +1.5% from the temporary price-pressure component (Holthausen, Leftwich & Mayers 1990 on block trades). INTRA-SELL closing on the low may gap lower the next morning, so open_{t+1} entry could beat close_t for that subclass. Lou, Polk & Skouras (2019): overnight and intraday returns come from different clienteles and persist differently.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP3_volume_dryup_vs_spike",
+   "family": "stock_panic_trigger",
+   "definition": "Base: SP1 events (Z=-3, R=-4%, calm market), in U200 and MIDQ separately. vr_t = val_t/_shift(val20,1)_t. Buckets: DRY vr_t<=a; MID a<vr_t<b; SPIKE vr_t>=b. 3-day quiet-grind variant: c_t/c_{t-3}-1 <= -8% & sum of idio over t-2..t <= -3*sig_t*sqrt(3) & max(val_{t-2..t})/val20_{t-3} <= a. Entry open_{t+1}; exit at close after 5 and 10 days. Report per bucket: mean, median, win rate, excess, events/yr.",
+   "params": "(a, b) in {(1.2, 3), (1.5, 4)}; universe in {U200, MIDQ}; hold in {5, 10}",
+   "rationale": "Volume is the main daily-data signal separating informed selling from liquidity selling, and the literature disagrees on the sign by stock size. That makes this a discriminating test rather than a fishing trip. The in-house capitulation result (-10% on 3x volume keeps falling) was on attention stocks only; it is unknown whether it holds for large caps.",
+   "expected": "DRY/MID 5d excess +0.3% to +0.8%. SPIKE in MIDQ -1% or worse at 5d and more negative at 21d: informed trading causes continuation in high-asymmetry names (Llorente, Michaely, Saar & Wang 2002), and low-transaction names reverse more (Conrad, Hameed & Niden 1994); consistent with the in-house D6 result (5d -1.5%, 21d -5%). SPIKE in U200 is uncertain and is the key cell: Campbell, Grossman & Wang (1993) predict high-volume declines in large liquid stocks reverse more (non-informational liquidity demand).",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP4_single_name_vs_sector_wide",
+   "family": "stock_panic_trigger",
+   "definition": "Join 2018 KSIC sector labels (FinanceData/stock_master) by code. For stock i in sector S on day t: M = {j in S, j != i, val20_{t-1}>=1e9, raw_t>=1000, valid c}; require |M|>=4, else the event is excluded. secx_t = mean ret1 over M (clipped to +/-30%); breadth_t = share of M with ret1 <= -3%. SINGLE: ret1_t<=-R & secx_t>=-1% & x_t>-2% (the name fell alone). SECTOR: ret1_t<=-R & secx_t<=-S & breadth_t>=50% & x_t>-2% (sector shock in a calm market). Universe U200 (MIDQ as secondary). For SECTOR, choose which member to buy: the deepest decliner, or the sector's largest-cap member with ret1<=-R/2. Entry open_{t+1}; exit at close after 5 and 21 days. Caveat: labels are fixed as of 2018, and post-2018 listings are unlabelled and dropped (mild static-label look-ahead; report the 2019+ subset separately).",
+   "params": "R in {5%, 8%}; S in {2%, 4%}; hold in {5, 21}; SECTOR pick in {deepest decliner, largest-cap decliner}",
+   "rationale": "Separates a firm-specific shock from an industry repricing (regulation, commodity or peer earnings, sector ETF or foreign selling). A lone drop in a calm sector is more likely a single seller or firm-specific news. A sector-wide drop is either fundamental industry news (persistent) or flow (temporary), which the largest-cap-member variant tries to isolate.",
+   "expected": "SINGLE: 5d excess +0.3% to +1%; 21d about 0 because some are news. Within-industry residual reversal is stronger than raw reversal (Da, Liu & Schaumburg 2014; Hameed & Mian 2015). SECTOR: industry returns show 1-month momentum (Moskowitz & Grinblatt 1999), so 21d excess -0.5% to -2%, consistent with the in-house finding that sector-level signals do not pay long-only. A 5d bounce is possible for the largest-cap member when the shock is flow-driven.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP5_dip_in_healthy_trend",
+   "family": "stock_panic_trigger",
+   "definition": "Pre-drop state, measured at t-1: caprank_{t-1}<=200 & raw_t<=300000 & c_{t-1}/hi250_{t-1}>=Q & 0<ret60_{t-1}<=0.40 & max20_{t-1}<0.10 & c_{t-1}>ma120_{t-1}. Drop at t: d_t = (c_t - ma20_t)/atr14_{t-1} <= -K & z_t<=-2 (SP1) & x_t>-2% & ret1_t>-15%. Rank by d_t ascending. Entry close_t (primary) or open_{t+1}. Exit HOLD5 at close, or EXIT-MA: first close with c>=ma5 (earliest t+1), max 10 trading days. Contest use as an overlay on the current bot: the dip candidate fills a slot freed by the bot's +10% surge sell or 21-day rotation, or replaces the bot holding with the lowest c/hi250 at the same execution time.",
+   "params": "Q in {0.85, 0.92}; K in {1.5, 2.5, 3.5}; exit in {HOLD5, EXIT-MA max 10d}",
+   "rationale": "This is entry timing for the bot's own edge: buy the same kind of stock (top-200, near its 52-week high, steady uptrend, no surge) when a non-market shock puts it on sale. The pre-drop state screens out bubble deflation and chronic losers, the main sources of permanent repricing. It is not the failed knife set, which was attention and run-up names.",
+   "expected": "+0.5% to +1.2% net per trade, win rate 55-60%, low tail risk because the pre-drop state selects low-vol trending large caps. George & Hwang (2004): stocks near the 52-week high under-react to good news and keep drifting, so a noise dip is a cheaper entry into the same drift. Connors-style oversold pullbacks in uptrends are practitioner evidence and have weakened since 2010. Main risk: the dip is day 1 of a trend break (earnings miss); combine with SP2 and RF2.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP6_slow_grind_vs_single_shock",
+   "family": "stock_panic_trigger",
+   "definition": "nd_t = number of consecutive days ending at t with ret1<0. cum_t = c_t/c_{t-nd_t} - 1; mcum_t = mkt_t/mkt_{t-nd_t} - 1 (mkt from m.ind); icum_t = cum_t - beta_t*mcum_t; worst_t = min ret1 over the streak. GRIND: U200 & nd_t>=N & icum_t<=-X & worst_t>=-4% & mkt_t/mkt_{t-5}-1 > -4%. SHOCK control: U200 & icum over the last N days <= -X & the single worst day in those N days <= -0.7X (one day dominates). Entry close_t; exit at close when c>=ma5 (max 7 days), or HOLD5. Report 5d and 21d net and excess.",
+   "params": "N in {5, 7}; X in {6%, 10%}; exit in {HOLD5, c>=ma5 max 7d}",
+   "rationale": "A long run of small down days with no gap or shock day looks like one persistent seller (fund redemption, foreign program selling, a major holder feeding shares out) rather than news, and such pressure tends to reverse when the seller is done. The SHOCK control with the same cumulative loss isolates the speed and shape of the decline.",
+   "expected": "GRIND 5d excess +0.3% to +1%: fire-sale price pressure reverses (Coval & Stafford 2007); temporary pressure (Harris & Gurel 1986); retail contrarians are paid for providing liquidity (Kaniel, Saar & Titman 2008). Counter-evidence: Da, Gurun & Warachka (2014), frog in the pan: continuous small moves predict stronger continuation over months, so 21d may be negative and the 5d vs 21d contrast is itself informative. SHOCK expected weaker at 5d and negative at 21d.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "SP7_confirmation_entry",
+   "family": "stock_panic_trigger",
+   "definition": "Event set: SP1 events (Z=-3, R=-4%, U200, calm market) after RF1 filters. IMM: buy at close_t. C1 no new low: buy at close_{t+1} only if l_{t+1}>=l_t & c_{t+1}>=c_t. C2 reversal bar: buy at close_{t+1} only if c_{t+1}>o_{t+1} & ibs_{t+1}>=0.6 & o_{t+1}>=0.99*c_t (no follow-through gap). An event that fails its condition is dropped, never bought later. Exit at close H trading days after entry. Report mean, median, win rate, share of events kept, and the contest-sim tail P(month<=-10%).",
+   "params": "variant in {IMM, C1, C2}; H in {5, 10}",
+   "rationale": "The knife study had positive mean but negative median returns: a few big rebounds, many continued slides. News-driven continuation usually shows up the next day as a new low or a second gap down, so waiting one session filters it out using only data available at close_{t+1}. The cost is giving up the day-1 bounce.",
+   "expected": "C1/C2 raise the median and win rate and cut the monthly left tail; mean effect is ambiguous. Much of a liquidity reversal happens in days 1-3 (Bremer & Sweeney 1991; Cox & Peterson 1994), so confirmation may give up 0.3-0.8% per trade. A plausible outcome is IMM best in mean but C1 best in mean minus a tail penalty, which is what the contest objective rewards.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "EX1_mean_reversion_exits",
+   "family": "exit_rule",
+   "definition": "Apply to the best IS trigger from SP1-SP7 with entry fixed; t0 = event day, entry at close_t0 or open_{t0+1}. Daily at close unless noted. E-FIX: sell at close after H days. E-REC: sell at the first close meeting the recovery target (earliest the day after entry), max 10 days. Targets: c>=ma5_t; c>=c_{t0-1} (pre-drop close, full refill); or c >= c_t0 + 0.5*(c_{t0-1} - c_t0) (half retrace). E-FAIL overlay on E-REC: also sell at close if c < l_t0 (event-day low broken, a sign of news continuation). E-TPSL: intraday limit take-profit at entry*(1+tp) and stop at entry*(1-sl), stop fills get +0.2% extra slippage, if both hit the same day assume the stop, max 10 days. All positions are liquidated on the contest's last day at close. Metric: contest-sim monthly mean, median, P(<=-10%), and average slot idle time.",
+   "params": "H in {3, 5, 10}; recovery target in {c>=ma5, c>=c_{t0-1}, half retrace}; fail overlay in {off, on}; (tp, sl) in {none, (+5%, -10%), (+8%, -12%)}",
+   "rationale": "A reversal trade's edge decays quickly. Exiting when the overshoot is repaired frees the slot for the next event, which matters with only 1-3 slots in a 21-day month. The failure exit is the only daily-data way to admit a news case early. Tight stops fight the volatility a mean-reversion trade needs.",
+   "expected": "E-REC (ma5 or half retrace) beats E-FIX in monthly mean via faster capital turnover (practitioner evidence: Connors-style exit on strength). E-FAIL improves the median and P(<=-10%) at a small mean cost. E-TPSL with sl -10% is worse than E-FIX, as in-house knife results already showed (+10%/-10%/10d worse than a 5-day hold in 20 of 24 cells). Expect H=5 to be the best fixed hold. Watch the month-end cutoff: exits that need more than 7 days waste late-month events.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "RF1_permanent_repricing_avoid_list",
+   "family": "risk_filter",
+   "definition": "On SP1 events (both universes, before any other filter), flag at close t. lim = 0.15 before 2015-06-15, 0.30 after. F1 severity: ret1_t <= -S1 or c_t <= c_{t-1}*(1 - lim + 0.005) (limit-down close). F2 cascade: ret1_{t-1} <= -10% & ret1_t <= -10% (forced-liquidation chain, like the 2023 CFD / 반대매매 collapses). F3 bubble: ret60_{t-1} >= B or max20_{t-1} >= 15% (prior theme run-up). F4 audit season: market label KOSDAQ & caprank_t>300 & date between Mar 10 and Apr 15 (audit-opinion / 관리종목 delisting risk). F5 penny/illiquid: raw_t<2000 or val20_{t-1}<3e9. F6 already broken: c_{t-1}/hi250_{t-1} <= 0.5. Report 5d and 21d net and excess for flagged vs kept subsets (each flag alone and all combined), then the contest sim of the best trigger with the IS-chosen filter set.",
+   "params": "S1 in {15%, 20%}; B in {+30%, +50%}; combination in {each flag alone, all flags}",
+   "rationale": "Each flag marks a situation where the drop is likely to be permanent repricing or a forced-selling cascade with no natural buyer, not a liquidity overshoot: serious news (limit-down), a margin-call chain, bubble deflation, delisting risk, or a structurally failing company. Removing them should fix the negative-median problem that sank the knife study.",
+   "expected": "Flagged subsets show negative 5d and clearly negative 21d excess. F3 and F2 should matter most: in-house A2 run-up names after a drop returned -2.2% to -4.1% net over 21 days, and the D6 capitulation cascade returned -4.9%. Cox & Peterson (1994) document longer-horizon underperformance after large declines. The kept set should reach median >= 0 at 5d; if it does not, the stock-panic sleeve should be dropped.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "RF2_earnings_announcement_proxy",
+   "family": "risk_filter",
+   "definition": "Tag each SP1/SP2 event as EARN or NON-EARN using data before t only. P1 calendar: t falls in Korean results windows Jan 25-Feb 15, Apr 20-May 16, Jul 20-Aug 16, Oct 20-Nov 15, plus the first 10 trading days of Jan/Apr/Jul/Oct for caprank<=50 (preliminary results). P2 own seasonality: the same stock had an information event about 1 year or 1 quarter earlier, i.e. for some d in [t-252-w, t-252+w] or [t-63-w, t-63+w]: |gap_d|/sig_d >= 3 or val_d/val20_{d-1} >= 3 (announcement dates recur). EARN = P2, or P1 & gap_t<=-2%. Entry open_{t+1}; exit at close after 5 and 21 days. Compare EARN vs NON-EARN event returns, and the SP1 contest sim with EARN events excluded.",
+   "params": "proxy in {P1, P2, P1 AND P2}; window half-width w in {3, 5} trading days; hold in {5, 21}",
+   "rationale": "Earnings surprises are the most common reason for a permanent single-stock repricing, and they drift instead of reverting. Earnings dates are not in the data, but they recur on nearly the same calendar slot every year and quarter, so they can be predicted from the stock's own past abnormal gaps and volume without look-ahead (the same trick Frazzini & Lamont used for predicted announcement months).",
+   "expected": "EARN drops: 21d excess -1% to -3% (post-earnings-announcement drift: Bernard & Thomas 1989; announcement effects are present in Korea among the markets in Barber, De George, Lehavy & Trueman 2013). NON-EARN drops: stronger 5d reversal (Chan 2003; Savor 2012). P2 should beat P1: the calendar proxy covers about 35% of days and is too coarse. Excluding EARN should lift SP1's IS median by 0.3-0.5pp.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "VAL1_protocol_and_contest_integration",
+   "family": "validation",
+   "definition": "Step 1, event study. Split: IS 2011-2018 (also report 2015.7-2018 on its own because of the price-limit change), VAL 2019-2024.9, TEST 2024.10-2026.9 once. Metrics: net mean, median, win rate, excess vs same-day universe mean, t-stats clustered by date and by month, share of total P&L from the top 5 dates (flag if >40%), year-by-year table, KOSPI vs KOSDAQ split. Always exclude days with x_t<=-M (reserved for the market-panic lens). Placebo: for each event, a same-day control from the same caprank bucket (5 buckets) and vol60 tercile with |z|<1; report the treated-minus-control difference. Pass gate in IS: median>0, excess t>=2, no single year >35% of P&L, >=300 events. Step 2, contest sim (engine month logic, 600k KRW, integer shares, costs as engine.py). M0 current bot. M1 standalone stock-panic, 2 slots, signal mode, exit from EX1. M2 overlay: bot with 2 slots; when an event qualifies and no event position is open, sell the bot holding with the lowest c/hi250 at the event entry time, hold per the exit rule, then refill from the bot ranking. M3: 3 slots, 2 bot + 1 reserved for events (cash when idle). Choose at most 6 finalists in IS only by mean - 0.5*P(month<=-10%). VAL must beat M0 by >=+0.3%/month without a higher P(<=-10%) before running TEST. Optional VAL-only diagnostic, 2019-2024 flows data: do events with foreign+institutional net selling >=X% of val_t reverse more?",
+   "params": "calm-market cutoff M in {2%, 3%}; integration in {M1, M2, M3}; month-start step in {2 days (IS/VAL), 1 day (TEST)}",
+   "rationale": "The knife study failed through positive means carried by a few crash dates. Clustered errors, a median gate, date concentration, the placebo, and excluding market-panic days guard against repeating that. Many stock-panic cells are tested (about 24 in SP1 plus splits), so selection must stay in IS and the gates must be strict. The integration modes answer the practical question for a 1-3 slot account: replace the bot, sit beside it, or keep a slot reserved.",
+   "expected": "Realistic best case: M2 or M3 adds +0.3% to +1.0% per month over M0 with a similar tail. M1 standalone is probably no better than the EW market, because 4-6 round trips per slot per month at about 0.35% each cost 1.4-2.1% per month, consistent with the earlier finding that picking rarely beats EW after costs. If no trigger passes the IS gates, conclude the stock-specific panic edge is not tradable at this size and put the effort into the market-panic selection lens.",
+   "lens": "stock_panic"
+  },
+  {
+   "id": "V1",
+   "family": "validation",
+   "definition": "Episode-clustered horse race for panic-day selection rules. Panic day P(t): mkt_ret1[t] <= -thr. Episode: merge panic days whose gap is <= 10 trading days; the episode start is its first panic day. For every rule R (S1-S5 and baselines) and every panic day t: take R's top-n names at close t from its universe (base ok mask: c valid, raw>=1000, val20>=1e9, val>0, raw<=300k). Trade return = buy at o[t+1]*(1+slip)*(1+fee), sell at c[t+H]*(1-slip)*(1-fee-tax). Baselines: B0 = equal weight of all ok & caprank<=200 names with the same entry and exit; K2 = top-200 deepest ret1[t]. Report per period (IS 2011-2018 / VAL 2019-2024.9 / TEST): (i) day-weighted mean, (ii) episode-weighted mean (average within an episode, then across episodes), (iii) median across episodes, (iv) share of episodes where R beats K2, (v) worst episode, (vi) leave-one-year-out (drop the year contributing most), (vii) episode bootstrap 95% CI (2000 resamples). Placebo: run the same rule on non-panic down days with mkt_ret1 in [-2%,-1%]. Pass rule: episode-weighted excess over K2 > 0 in both IS and VAL, still > 0 after leave-one-year-out, and clearly larger than the placebo excess. Only rules that pass go on to the contest sim (run_hybrid).",
+   "params": "thr {3%, 4%}; top-n {2, 10}; H {5, 10, 21}",
+   "rationale": "There are only 61 panic days at -4%, forming about 25-30 independent episodes, and 2026 alone has 17 days. Day-weighted means (as in lab_panic.md) are dominated by 2011, 2020 and 2026 clusters, which is why the IS winner failed VAL. Top-10 lowers name-level noise when ranking rules; top-2 is what the contest trades. The placebo checks that the edge is panic-specific: generic short-term reversal already failed after costs in the knife study.",
+   "expected": "Several rules that look good day-weighted will shrink under episode weighting. Expect 0-3 rules to pass. Episode counts: about 25 at -4% and about 45-55 at -3%. The bootstrap CI on the difference versus K2 will be wide (+/-2pp at H=5), so rank rules only by consistency across IS and VAL.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "T1",
+   "family": "market_panic_trigger",
+   "definition": "Volatility-scaled surprise trigger. sig[t] = sqrt(mean(mkt_ret1[u]^2 for u = t-60..t-1)); z[t] = mkt_ret1[t] / sig[t]. Panic if z[t] <= -Z AND mkt_ret1[t] <= -2.5%. Selection is held fixed at K2 (top-200 deepest ret1[t]) and K1 (attention -10%), so only the trigger changes. Entry at open t+1, exit at close t+H. Compare with the raw -4% trigger using the V1 metrics and a run_hybrid contest sim (panic mode replaces base holdings).",
+   "params": "Z {3, 4, 5}; H {5, 21}",
+   "rationale": "The failing panics (2020-02/early 2020-03, 2022) came in regimes that were already volatile, with repeated -3/-4% days, i.e. fundamental repricing cascades. Winning ones (2024-08-05 yen-carry unwind, 2026-03-04) were surprise shocks from calm regimes, more likely deleveraging and liquidity-driven, so they snap back. Opposite view: Nagel (2012) finds that liquidity-provision (reversal) returns rise with volatility, so high-vol regimes should pay more. This test says which effect dominates at 5-21 days.",
+   "expected": "The z-trigger should cut events in the 2020/2022 clusters and raise episode-weighted K2 5d return by about +1pp versus raw -4%, with fewer panic months at -10% or worse. Main cost: it probably misses 2020-03-19, the actual bottom, because vol was already high then. If the Nagel effect dominates, the sign flips and high-vol panics rebound more.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "T2",
+   "family": "market_panic_trigger",
+   "definition": "Alternative panic definitions that enlarge and diversify the event set, each computed at close t. (a) Breadth: B[t] = share of names with val20[t-1] >= 3e9 and ret1[t] <= -3%; panic if B[t] >= b. (b) KOSPI200 proxy: KP[t] = sum(cap[t-1,i]*clip(ret1[t,i],+/-30%)) / sum(cap[t-1,i]) over KOSPI-labelled names with caprank[t-1] <= 200; panic if KP[t] <= -k. (c) Cumulative slide: C3[t] = mkt[t]/mkt[t-3] - 1 <= -c AND mkt_ret1[t] < 0, with a 5-day refractory period after firing. Selection fixed to K2 and K1, entry at open t+1, evaluated with V1 (events and episodes per year, episode-weighted returns).",
+   "params": "b {0.6, 0.75, 0.9}; k {2.5%, 3%, 4%}; c {6%, 8%, 10%}",
+   "rationale": "EW mkt_ret1 is dominated by KOSDAQ and small caps, so it misses days when foreigners dump Samsung/Hynix-type large caps (the K2 universe) and flags small-cap-only selloffs. Breadth measures indiscriminate selling, which is the mechanism that creates mispricing. A 3-day slide captures margin-call liquidation cascades that never print a single -4% day.",
+   "expected": "Breadth >= 75% should look like EW -3%. The KP proxy should give a more large-cap-centric set where K2 excess is higher (+0.5pp 5d vs the EW trigger). The cumulative trigger adds about 30-50% more events with weaker per-event rebounds (+0.5-1% 5d). Pick the definition with the best episode-weighted K2 excess that holds in both IS and VAL.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "T3",
+   "family": "market_panic_trigger",
+   "definition": "Confirmation entry. After panic day t0 (mkt_ret1[t0] <= -4%, or the T1/T2 winner), freeze the candidate list L at close t0 (default: top-200 ranked by ret1[t0], top 12). Scan u = t0+1 .. t0+W; the confirmation day u* is the first u with mkt_ret1[u] >= X. If another panic day occurs before confirmation, reset t0 to that day and rebuild L. At u*, rank L by cumulative drop c[u*]/c[t0-1] - 1 (deepest first) and buy the top 2. Entry at close u* (closing auction, decided about 15:19 with mkt_ret1 approximated by the close) or at open u*+1. Hold H days from entry. If no confirmation within W days, skip the episode and stay in the base strategy.",
+   "params": "X {0, +1.5%}; W {3, 10}; entry {close u*, open u*+1}; H fixed at the V1 winner (5 or 21)",
+   "rationale": "The VAL failure mode was 'keeps falling': in 2020-02/03 and 2022 the market made several more lower closes after the first panic. Requiring an up day (a follow-through day) filters cascades at the price of the first-day rebound. Closing-auction entry on u* avoids a further overnight gap.",
+   "expected": "In V-shaped episodes (2024-08-06 type) the first up day holds much of the rebound, so the mean falls by about 0.5-1.5pp per event there. In 2020/2022-type cascades losses shrink sharply. Net episode-weighted mean is roughly flat (+/-0.5pp), but P(month <= -10%) in panic months should drop materially (e.g. 8% to 4-5% in VAL). Accept if VAL improves without IS falling by more than 0.3pp.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "T4",
+   "family": "market_panic_trigger",
+   "definition": "Scale-in across a panic episode with 3 slots of 200k (price cap 200k). Schedule A (per panic day): episode start t0, buy slot 1 at open t0+1 with the top-ranked name of day t0. For each later panic day t in the same episode (gap <= 10 days), buy the next slot at open t+1 with that day's top-ranked name not already held, up to 3 slots. Schedule B (time and confirmation split): 1/3 at open t0+1, 1/3 at the T3 confirmation (X=0, close u*), 1/3 at open t0+6 if still unfilled. Exit: every slot at close of (its entry day + H - 1), or all slots at close of (last entry + H - 1). Control: all-in with 2 slots at open t0+1. Ranking rule = best S-rule from V1, K2 by default.",
+   "params": "schedule {all-in 2 slots, A per-panic-day, B split}; H {5, 21}; exit {per-slot, from last entry}",
+   "rationale": "Panics cluster (2011: 11 days, 2020: 11, 2026: 17). Going all-in on the first day takes the whole second leg down, while later panic days in a cluster (e.g. 2020-03-19) are the best entries. Scaling in lowers the average cost when the cascade continues and still has 1/3 invested in a V-shape. Three names also cut idiosyncratic risk.",
+   "expected": "Worst-episode loss should fall by about 1/3 versus all-in. Episode-weighted mean roughly equal or +0.5pp (gains in 2011/2020/2022 clusters, losses in single-day V-shapes such as 2024-08-05). Lower frequency of months at -10% or worse. The 200k price cap excludes some large caps, so check the universe shrinkage.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "S1",
+   "family": "market_panic_selection",
+   "definition": "Beta versus residual overshoot. beta_i[t] = Cov(r_i, M) / Var(M) over u = t-120..t-1, where r = clip(ret1, +/-30%), M = mkt_ret1, and at least 80 valid days are required. Vasicek shrink: b* = 0.67*beta + 0.33. Idiosyncratic vol sd_e = std of (r_i - b*·M) over the same window. On panic day t: resid_i = ret1_i[t] - b*_i·mkt_ret1[t]; zres_i = resid_i / sd_e_i. Universe: ok & caprank[t] <= 200. Rules: (a) K2 raw deepest ret1 (baseline), (b) highest b*, (c) most negative resid, (d) most negative zres, (e) resid <= -3% AND b* >= 1.2, ranked by resid. Exclude names with resid < -20% (likely stock-specific news). Entry at open t+1, hold H.",
+   "params": "rule {b, c, d} vs baseline a; universe caprank {<=200, <=400 with val20>=5e9}; H {5, 10, 21}",
+   "rationale": "A raw panic-day drop is beta times the market move plus a residual. The beta part is a leveraged bet on a market rebound; the residual is the liquidity overshoot that should revert once forced selling ends. Da, Liu & Schaumburg (2014) find short-term reversal concentrated in the non-fundamental residual component; Nagel (2012) finds reversal returns highest in high-vol states. Separating the two shows whether K2's edge is market beta (fragile in 2020/2022) or overshoot (more robust).",
+   "expected": "(c)/(d) should beat (a) by +0.5-1.5pp at 5d on an episode-weighted basis, with smaller cross-episode dispersion because beta exposure is lower. (b) should have the highest mean in V-shaped episodes and the worst loss in continuation episodes (2020-03 early, 2022). Residual reversal should decay by 21d, so the best H for (c) is 5-10.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "S2",
+   "family": "market_panic_selection",
+   "definition": "Prior leaders versus prior losers versus defensives (momentum-crash test). All ranking inputs are measured at t-1 (pre-panic), universe ok & caprank[t] <= 200. Rules: (a) prior losers = lowest ret{L}[t-1]; (b) prior leaders = top-N by c[t-1]/hi250[t-1] with ret60[t-1] > 0 and max20[t-1] < 10% (the current bot's list), then within those N the deepest ret1[t]; (c) low-vol defensives = lowest vol60[t-1]; (d) highest mom12_1[t-1]. Entry at open t+1, hold H. Extra comparison: (e) 'stay put', i.e. keep the base strategy's current holdings (no switch cost).",
+   "params": "lookback L for (a) {60, 120, 250}; leader list N for (b) {10, 20}; H {5, 21}",
+   "rationale": "Daniel & Moskowitz (2016): in panic states (market down, high vol), past losers behave like cheap calls on the market and rebound violently while past winners lag. That is the momentum crash, and it predicts (a) > (b). The competing 'quality sold indiscriminately' view predicts (b) rebounds just as well with less downside. If (b) or (e) matches K2, the hybrid does not need the costly and risky switch.",
+   "expected": "(a) should have the highest mean 21d excess (+1-3pp vs the top-200 EW) and the fattest left tail. (b) should be near the EW with the smallest drawdown in continuation episodes. (c) should rebound least (about -1pp vs EW at 5d). If (b) or (e) is within 0.3pp of K2 on an episode-weighted basis, prefer staying put.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "S3",
+   "family": "market_panic_selection",
+   "definition": "KOSDAQ versus KOSPI and the margin forced-selling window. On panic day t, universes (all ok): KOSPI-L = KOSPI label & caprank[t] <= 200; KOSDAQ-L = KOSDAQ or KOSDAQ GLOBAL label with within-KOSDAQ cap rank (point-in-time at t) <= 100. Rank by deepest ret1[t], top 2 (and top 10 for V1). Entry timing: close t (closing auction), open t+1, or open t+2; exit at close of entry day + H - 1. Diagnostics per bucket: g1 = o[t+1]/c[t] - 1, i1 = c[t+1]/o[t+1] - 1, g2 = o[t+2]/c[t+1] - 1.",
+   "params": "market {KOSPI-L, KOSDAQ-L}; entry {close t, open t+1, open t+2}; H {5, 21}",
+   "rationale": "Korean retail credit (신용융자) rule: if the collateral ratio breaches maintenance on day D and is not topped up by D+1, the broker force-sells at the D+2 opening auction (반대매매), often at deep discounts. Credit balances are concentrated in KOSDAQ retail names, so KOSDAQ decliners should carry forced-selling overhang into the t+1 and t+2 opens (the knife study already found next-open weakness), while KOSPI large caps are institution-driven and should reprice by t+1.",
+   "expected": "KOSDAQ-L should have a higher mean 5d rebound (+1-2pp vs KOSPI-L) with larger variance. g2 should be negative on average (about -0.5% to -1%) for KOSDAQ deepest decliners but near zero for KOSPI-L, so KOSDAQ is best entered at open t+2 and KOSPI at close t or open t+1. If g2 is not negative, drop the forced-selling timing idea.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "S4",
+   "family": "market_panic_selection",
+   "definition": "Panic-day relative volume as a liquidity-versus-information discriminator. On panic day t: rv_i = val[t,i] / val20[t-1,i]; rrv_i = rv_i / median(rv_j over the same universe that day). Candidates: ok names with ret1[t] below the universe median (decliners). Split decliners into the top rrv tercile (H-vol) and the bottom tercile (L-vol), and rank each by deepest ret1[t]. Universes: top-200 (caprank <= 200) and K1 attention (val-rank top-50 in the last 20 days, prior to t). Entry at open t+1, hold H.",
+   "params": "volume bucket {H-vol, L-vol}; universe {top-200, K1 attention}; H {5, 21}",
+   "rationale": "Campbell, Grossman & Wang (1993) and Llorente, Michaely, Saar & Wang (2002): price moves on high volume reverse when trades are liquidity/hedging driven (large, liquid, low-information firms) and continue when informed (small, information-asymmetric firms). The knife study's finding that capitulation (3x volume) keeps falling fits the informed side for attention names. On market-wide panic days, large-cap selling is mostly non-informational (index, ETF and foreign deleveraging), so the sign should flip there.",
+   "expected": "Within the top-200, H-vol decliners should beat L-vol decliners by +0.5-1.5pp at 5d. Within K1 attention names, H-vol should underperform (replicating D6: continuation). If both universes show the same sign, the mechanism is wrong and the idea should be dropped.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "S5",
+   "family": "market_panic_selection",
+   "definition": "Sector-relative selection, using a static join of 2018 KSIC sectors (FinanceData/stock_master) by code; names without a sector are excluded from sector rules. On panic day t: SR_s = equal-weight ret1[t] over ok names with val20[t-1] >= 3e9 in sector s, requiring at least m members. Rules: (a) sector-relative overshoot = most negative ret1_i - SR_s(i) among caprank <= 200; (b) worst-hit sector leaders = the 2 sectors with the lowest SR_s, then the largest-cap ok member of each (one name per sector); (c) most resilient sector leaders = the same for the 2 highest SR_s (control). Entry at open t+1, hold H.",
+   "params": "rule {a, b, c}; min sector size m {5, 10}; H {5, 21}",
+   "rationale": "Hameed & Mian (2015): reversals are much stronger measured relative to the industry, because industry moves carry information (and industry momentum, Moskowitz & Grinblatt 1999). A stock falling more than its own sector on an indiscriminate-selling day is the cleanest liquidity overshoot. Buying the worst-hit sectors is the naive approach and may just buy the sector that the panic's news actually hit (e.g. semis on an AI scare).",
+   "expected": "(a) should beat K2 by +0.5-1pp at 5d with lower dispersion. (b) should be roughly equal to K2 at 5d and worse at 21d (sector continuation). (c) should have the lowest rebound but the best continuation-episode behaviour. Caveat: the static sector map is a minor classification look-ahead and coverage is incomplete, so confirm (a) against S1's beta residual.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "E1",
+   "family": "exit_rule",
+   "definition": "Exits for panic positions opened at open t0+1 (or at the T3/T4 entries). All exits are at the close. (a) Fixed H trading days. (b) Recovery exit: sell at close of the first day u with mkt[u] >= mkt[t0-1] (EW index back to its pre-panic level) OR position close-to-entry return >= TP, with a 21-day cap. (c) Market stop: sell all at close of the first u with mkt[u] <= mkt[t0]·(1-s) (a further leg down after the panic close). Then return to the base strategy and re-arm the trigger, so a later panic day re-enters with a fresh ranking. (d) Combination (b)+(c). Evaluate within run_hybrid, since freed cash goes back to the base strategy.",
+   "params": "H {5, 10, 21} for (a); TP {8%, 15%} for (b); s {3%, 5%} for (c)",
+   "rationale": "Evidence so far: K2's excess grows from 5d (+1.2%) to 21d (+3.5%) and attention names are +5.5% (5d) and +7.9% (21d), so for the mean, holding longer is not worse. The VAL failures are second-leg continuations (2020-03-09 to 03-19, 2022). A market-level stop plus re-arm turns a knife-in-hand loss into re-entering lower on the next panic day. The recovery exit takes the mean-reversion once the market has repriced.",
+   "expected": "(c) with s=5% should cut the worst panic-month loss by about 40% and improve VAL, at a cost of about -0.2pp IS mean from whipsaws (2011, 2020-03-12/13). (b) should roughly match the 21d mean with lower variance. Optimal fixed H: 21 for large caps, 5-10 for attention names.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "R1",
+   "family": "risk_filter",
+   "definition": "Pre-panic regime filter for a panic day t (EW <= -4% or the T1/T2 winner); trade the panic only if the filter passes, otherwise stay in the base strategy. Candidate filters, all known at close t: (a) mkt_on[t-1] is True (EW index above its 100-day MA before the panic, i.e. a bull-market shock). (b) Pre-panic drawdown DD[t-1] = mkt[t-1]/max(mkt[t-250..t-1]) - 1, in buckets {> -10%, -10% to -20%, < -20%}. (c) Cluster order n[t] = number of panic days in [t-40, t-1], first (n=0) versus later (n>=1). (d) Deep capitulation: n[t] >= 2 AND mkt[t]/max(mkt[t-250..t]) - 1 <= -25%. Evaluate every bucket with V1 (selection K2 and the best S-rule, H 5 and 21), requiring at least 5 episodes per bucket in IS and VAL.",
+   "params": "filter {a mkt_on[t-1], b DD[t-1] > -10%, c n>=1, d deep capitulation}; H {5, 21}",
+   "rationale": "Two stories compete. The 'bull-market shock rebounds' story (2024-08-05, 2026-03-04, and likely 2025-04 tariff-type days) says trade only when mkt_on[t-1] is true. The 'late capitulation rebounds' story (2020-03-19 was the 11th panic in the cluster at about -35% drawdown) says trade later panics in a crash. Both imply the losing case is the first panic right after a trend break in a bear or early crash (2020-02-24, 2022). Filters (a) and (c) are complementary: passing if (a) OR (d) could keep the good cases on both sides.",
+   "expected": "mkt_on[t-1] True: K2 5d about +2%. mkt_on False and n=0: about -1% (the 2022 and early-2020 losers). Deep capitulation: about +3% but only 3-6 episodes, so treat as anecdotal. The best combined filter (a OR d) should lift VAL panic-month returns from -2.7% to about 0% or better while keeping most of the IS/TEST gain. Reject any filter that works in only one period.",
+   "lens": "market_panic_selection"
+  },
+  {
+   "id": "V1_episode_core",
+   "family": "validation",
+   "definition": "Panic day t: I['mkt_ret1'][t] <= -theta. Episodes: panic_sim.episodes(panic_mask, gap=G), used only to aggregate statistics, never as a trading signal. Per panic day t: basket = top-2 and top-5 of U200 = (caprank<=200 & tradable & raw<=300k) ranked by -ret1[t]. Return r_t(h) = mean over basket of c[t+h]/o[t+1]-1 minus 0.35%. Benchmarks on the same window: (a) EW liquid market, mean over val20>=3e9 of c[t+h]/o[t+1]-1; (b) K200 proxy, weighted by cap[t] over the top-200 KOSPI names; (c) EW of all of U200; (d) the current bot's top-2 (base.top[t][:2]) held with no switching cost. Delta_switch = r_t(h) - r_base_hold(h). Aggregate day to episode two ways: first panic day only, and the mean of all panic days in the episode. Report N_ep, mean, median, share>0, leave-one-episode-out min/max, mean without the best 1 and best 2 episodes, and the worst episode. Split into four eras: 2010.4-2015.6 (±15% limit), 2015.7-2018, 2019-2024.9, 2024.10-2026.9. A cell with N_ep<6 is descriptive only.",
+   "params": "theta in {3%, 4%, 5%}; G (merge gap, trading days) in {5, 10, 21}; h in {5, 10, 21}",
+   "rationale": "There are 61 panic days but only about 12-25 independent episodes. Evaluation windows start every 1-2 days, so one episode (2020-03, 2026-03) contaminates about 21 overlapping months and dominates the day-level and month-level means. The unit of evidence has to be the episode, and the benchmarks split the gain into market beta (a, b), universe (c) and selection (basket vs c). The real decision is to switch from the bot's holdings, so the counterfactual is (d), not cash. The pass rule is pre-registered and applied to the full 2010-2026 pooled sample. TEST (2024.10-) was already looked at in lab_panic.md and 2026 alone has 17 panic days, so TEST cannot serve as untouched out-of-sample data for this family.",
+   "expected": "At theta=4% and G=10, about 18-25 episodes. Positive episode-mean Delta_switch at 5d (+2 to +4%). Episode median will be much smaller (+0.5 to +1.5%) and share positive about 55-65%. Dropping the best two episodes (2020-03, 2026-03) should roughly halve the mean. Pre-registered pass: episode median Delta > 0, share > 55%, mean without the best 2 > 0, LOO min > 0, and the sign holds in at least 3 of 4 eras. If only the mean survives, treat the effect as tail-driven lottery exposure, not an edge.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "V2_matched_placebo",
+   "family": "validation",
+   "definition": "For each episode e take its first panic day t_e (theta=4%, G=10). Placebo pool: days u with mkt_ret1[u] > -2%, at least 21 trading days from any panic day, matched to t_e on (i) the tercile of X['mkt_vol20'][u-1] against its trailing 750-day distribution (causal) and (ii) X['mkt_above200'][u-1]. Apply the same selection on u (U200 deepest -ret1[u], top-2/top-5), the same next-open entry, holding and costs. Null: draw one matched placebo per episode, take the episode mean, repeat 2000 times; p = share of placebo means >= the actual mean (and the same for the median). Placebo 2, time shift: the same baskets with entry at t_e+21 and t_e+42, testing a generic high-vol regime effect against the panic day itself. Placebo 3, stock shuffle: random 2 names from U200 on t_e, 2000 draws, testing selection against pure market rebound.",
+   "params": "matching set in {vol tercile only, vol tercile + trend}; basket size in {2, 5}; h in {5, 21}",
+   "rationale": "The panic gain might just be a high-volatility regime premium: reversal and liquidity-provision returns are elevated whenever volatility is high. A matched placebo with the same number of draws as episodes gives an honest p-value under the scarcity. The time shift separates 'buy after the shock' from 'be long high beta in turbulent periods'. The stock shuffle shows whether ranking by deepest decline adds anything beyond market beta.",
+   "expected": "5d: the panic effect exceeds the matched placebo at p about 0.02-0.10. Reversal returns scale with market stress (Nagel 2012 RFS 'Evaporating Liquidity'; Hameed, Kang & Viswanathan 2010 JF 'Stock Market Declines and Liquidity'). 21d: the gap to placebo shrinks and is likely not significant. The stock shuffle should show most of the gain is market rebound plus high beta, with the deepest-decliner ranking adding little risk-adjusted alpha.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "V3_dose_response",
+   "family": "validation",
+   "definition": "Take every day t with a market drop of at least 2% and bucket by severity. Percent version (EW mkt_ret1[t]): B1 (-2,-3], B2 (-3,-4], B3 (-4,-5.5], B4 <= -5.5%. z version: z_t = mkt_ret1[t] / X['mkt_vol20'][t-1] with buckets (-2,-3], (-3,-4.5], <= -4.5. Third definition: z on the K200 proxy (X['k200_ret1'] divided by its own 20d RMS at t-1). For each bucket, with next-open entry: episode-clustered mean and median (cluster = merge within 10 days inside the bucket) of (a) the EW market h-day return (beta), (b) U200 deepest-2 minus EW U200 (selection), (c) Delta_switch vs the bot's top-2. Test monotonicity with Spearman over the buckets and a day-level regression of (c) on |severity|, with an episode-block-bootstrap CI for the slope. Compare the definitions by leave-one-episode-out prediction of the 5d episode return.",
+   "params": "definition in {EW %, EW z, K200-proxy z}; h in {5, 21}; basket in {2, 5}",
+   "rationale": "A single threshold (-4%) picked after seeing 61 days is fragile. A mechanism such as liquidity provision or forced deleveraging should produce a monotone dose-response, which uses about 250 days of weaker stress instead of 61 and is much harder to overfit. The z version fixes the regime problem: -4% in a 3%-daily-vol market (2020-03, 2022, 2026) is a much smaller surprise than -4% after a calm period (2015-08-24, 2024-08-05).",
+   "expected": "5d returns increase monotonically with severity (Nagel 2012; Campbell, Grossman & Wang 1993 QJE on market-wide volume-driven reversals). If only B3/B4 are positive and B1/B2 are <= 0, that is a plausible threshold effect. A non-monotone pattern means the 4% rule is overfit. The z definition should improve the episode median by down-weighting later cascade days in 2020 and 2022.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "R1_preregistered_regime_splits",
+   "family": "risk_filter",
+   "definition": "For each panic day t (EW mkt_ret1 <= -4%), compute state using data up to t-1. F1 trend: X['mkt_above200'][t-1]. F2 prior drawdown: X['mkt_dd60'][t-1] >= -d ('shock from near highs') vs < -d ('grind'). F3 prior vol: X['mkt_vol20'][t-1] <= median of mkt_vol20 over [t-250, t-1] ('calm') vs above ('stressed'). F4 causal cascade ordinal: number of panic days in [t-10, t] (1 = first, >=2 = cascade). Outcome: episode-level Delta_switch (V1) at 5d and 21d. Protocol: estimate each split on 2010-2018 episodes only. Pick at most ONE filter, and only if both sides have >=4 episodes and the median gap is at least as large as the mean gap, so one outlier cannot drive it. Freeze it and evaluate on the pooled 2019-2026.9 episodes, filtered vs unfiltered. The 2020 and 2022 outcomes are reported separately as descriptive only, since they motivated the search.",
+   "params": "d (F2 threshold) in {5%, 8%, 12%}; horizon in {5, 21}; F3 lookback fixed at 250",
+   "rationale": "The VAL failure came from 2020 and 2022 panics that kept falling. The candidate separators are the trend, the drawdown already suffered, the volatility level and whether the drop is a repeat. Because VAL inspired the filters, selecting on VAL would be circular. Fixed a-priori thresholds with IS-only selection, a minimum episode count per side and a median-based robustness check are the only defensible way to use about 20 episodes.",
+   "expected": "At 5d, shock-from-calm panics (F2 shallow, F3 calm, F4=1) should rebound (V-shape), while grind and cascade panics (F4>=2, F2 deep, below the 200d MA) continue for several days (liquidity spirals: Brunnermeier & Pedersen 2009 RFS). The 21d sign is uncertain: the deepest bear-state, high-vol panics tend to give the biggest loser rebounds later (Daniel & Moskowitz 2016 JFE 'Momentum crashes'). So the filter may help 5d exits and hurt 21d. Expect a 5d median gap of about 2-4pp between sides, with only about 50% chance it survives out of sample.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "T1_entry_timing_confirmation",
+   "family": "market_panic_trigger",
+   "definition": "For panic day t (EW mkt_ret1 <= -4%), fix the basket at t: U200 top-2/top-5 by -ret1[t]. Compare entries. E0: close of t (the 15:19 decision approximated by the close). E1: open of t+1. E2: close of t+2. E3 confirmation: the first u in [t+1, t+10] with mkt_ret1[u] >= +c, entering at close u; no trade if there is no confirmation. Every entry is measured to the SAME end dates, close t+10 and close t+21, so holding length does not confound timing. Costs 0.35%. Aggregate by episode (V1), both first-panic-day-only and all panic days.",
+   "params": "c in {+1%, +2%}; common end in {t+10, t+21}; basket in {2, 5}",
+   "rationale": "The 2020-03 failure was timing: buying after 03-09 took the fall to 03-19. Korea adds a specific mechanism. Credit-margin forced sales (반대매매) are executed at the opens of about t+2 to t+3 after a big drop, and retail-heavy KOSDAQ names are most exposed. That predicts extra continuation 1-3 days after the shock. Confirmation entry gives up the first bounce to avoid cascades, which matters for the P(month <= -10%) constraint.",
+   "expected": "E0 and E1 have the highest mean, driven by V-shaped shocks (2024-08-05 to 08-06). E2 and E3 have lower mean but a higher episode median and a worst-episode loss 3-8pp smaller in cascades (2011-08, 2020-03, 2022). Brunnermeier & Pedersen 2009 predicts short-horizon continuation during deleveraging. Prefer E3 if its worst-episode loss improves by >=5pp at a mean cost of <=1pp.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "T2_intraday_absorption",
+   "family": "market_panic_trigger",
+   "definition": "On panic day t, computed over liquid stocks (val20>=3e9): market close-location CLV_t = mean of (c-l)/(h-l) (skip h==l), overnight gap G_t = mean of o/c[t-1]-1, intraday I_t = mean of c/o-1. Classify each panic day two ways: absorbed (CLV_t >= q) vs closed-at-lows (CLV_t < q), and gap-driven (|G_t| > |I_t|, an overnight global shock) vs intraday collapse (|I_t| >= |G_t|, local selling). Outcomes for the U200 top-2 basket: next-day return (open t+1 to close t+1), and the 5d and 21d episode-level Delta_switch, each for E0 (close t) and E1 (open t+1) entry.",
+   "params": "q in {0.3, 0.4, 0.5}; h in {1, 5, 21}; entry in {close t, open t+1}",
+   "rationale": "Using daily OHLC, this is the only way to tell buyers absorbing the selling (a reversal signal) from a market that closed at the lows (forced selling unfinished, likely to spill into the next open). It is available at 15:19 approximately, so it can drive the close-vs-next-open entry choice without look-ahead.",
+   "expected": "Gap-driven days that are absorbed intraday (imported shocks such as 2024-08-05) show next-day reversal, so close-t entry is best. Intraday-collapse days closing at lows (CLV < 0.3) show next-open continuation, so a next-open or later entry is cheaper. The effect is mainly on 1-5d timing; the 21d difference is likely insignificant. Low power (about 20 episodes), so report it as a timing tiebreaker, not a standalone filter.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "S1_panic_selection_beta_decomposed",
+   "family": "market_panic_selection",
+   "definition": "On panic day t, universe U = caprank<=200 & tradable & raw<=300k (<=200k when k=3). Rankings: S1 raw drop -ret1[t] (current K2). S2 residual drop -(ret1[t] - X['beta60'][t]*mkt_ret1[t]), where beta60 uses data up to t-1. S3 highest X['beta60'][t] (pure rebound beta). S4 drop in own-vol units -ret1[t]/vol60[t-1]. Optional sector cap: at most 1 name per KSIC sector (X['sector']). Measure top-2 baskets with next-open entry at 5d and 21d. Decompose each basket return into beta60 x EW market return + residual. Report episode mean, median and the mean of the worst 3 episodes. Selection-luck check per episode: draw 2000 random pairs from each ranking's top-10 and report the percentile of the actual top-2 outcome.",
+   "params": "ranking in {S1, S2, S4} (S3 as a diagnostic); sector cap in {on, off}; h in {5, 21}",
+   "rationale": "The user asked which stocks to buy in a market panic. Deepest raw decliners are mostly high-beta names: they win big in V-rebounds and lose most in cascades, which is exactly the 2020 and 2022 VAL failure pattern. The drop beyond what beta explains isolates liquidity overreaction. The random-pair percentile shows whether ranking within the candidates matters or is noise; if it is noise, the random-pair dispersion is the realistic risk of a 2-slot account.",
+   "expected": "S1 and S3 have the highest mean but the worst tail (worst-3 mean about -10% at 5d). S2 has a similar or slightly lower mean with a better median and a 2-4pp smaller worst-3 loss: residual, within-industry reversals are stronger and cleaner (Da, Liu & Schaumburg 2014 Management Science; Hameed & Mian 2015 JFQA). The sector cap lowers P(month <= -10%) by about 1pp. The top-2 percentile is likely 50-65, meaning ranking adds little.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "X1_market_anchored_exit_plateau",
+   "family": "exit_rule",
+   "definition": "Panic positions (next-open entry after panic day t) exit at the close on the first of: (a) market take-profit, I['mkt'] closes >= X% above mkt[t]; (b) continuation stop, mkt closes >= Y% below mkt[t], with at most one re-entry per causal 10-day window on the next new panic day; (c) time cap H_max trading days. Baseline: fixed H. Plateau diagnostic: the episode-level fixed-H curve for H in {3, 5, 7, 10, 15, 21}. A config is admissible only if, on IS episodes, the means at H-2 and H+2 have the same sign and at least 50% of the magnitude at H. Implemented through panic_sim.Exit plus market-level checks in run_month_hybrid.",
+   "params": "X in {3%, 6%, none}; Y in {6%, 10%, none}; H_max in {5, 10, 21}",
+   "rationale": "Fixed H=5 is coincidence-prone: in 2020 a 5-day hold from 03-17 exited at the 03-23 dip, the day before a +8% bounce. Anchoring the exit to the market, which is the source of the edge, instead of to the stock (stock-level +10%/-10% brackets lost in the knife study) should cut sensitivity to H. A continuation stop caps grind losses (2011-08, 2022) but may sell at the lows.",
+   "expected": "Market take-profit (X=6%, H_max=10) matches the fixed-5d mean with much lower dispersion across neighbouring H, so it passes the plateau test while H=5 alone may fail. The continuation stop lowers the worst-episode loss by 3-6pp and P(month <= -10%) by 1-3pp, at a mean cost of about 0.2-0.5%/month, because it sells near the 2020-03-19 low.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "R2_staged_entry_slots",
+   "family": "risk_filter",
+   "definition": "On the first panic day in a causal 10-day window, replace only ONE slot: sell the lower-ranked base holding at open t+1 and buy candidate #1. The second slot switches only if (i) another panic day occurs within 10 trading days, or (ii) EW mkt closes >= D% below mkt[t] within 10 days. The entry is at the next open into that day's deepest U200 name; otherwise the slot stays in the base strategy. Variant: k=3 panic slots (price <= 200k), all three into candidates. Baseline: all-in with 2 slots (lab_panic default). Measure in run_month_hybrid with mp_slots=1 plus the add-on rule.",
+   "params": "D in {3%, 6%}; panic slot policy in {1+1 staged, 2 all-in, 3 all-in}; exit in {5d fixed, X1 best admissible}",
+   "rationale": "The contest objective penalizes months <= -10%. All-in on the first panic day is maximally exposed to cascades, and VAL P(month <= -10%) rose from 5% to 8%. Staging turns the scarce second panic day into a scale-in signal: it averages into 2020-03-19 or 2011-08 instead of being fully exposed at the first drop, and keeps one base slot as a hedge against a failed rebound.",
+   "expected": "Staged entry lowers the worst-episode loss by about 30-50% and P(month <= -10%) by 1-2pp, while giving up 30-50% of the upside in single-day V-shocks (2024-08-05). Net mean is about equal. Staging wins on the risk-adjusted contest metric if cascade episodes are at least one third of the total. The 3-slot variant lowers variance but faces the 200k price cap, which drops some large-cap panic names.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "P1_stock_panic_decomposition",
+   "family": "stock_panic_trigger",
+   "definition": "Stock events: (caprank<=300 or X['attn20']) & tradable & raw<=300k & ret1[t] <= -e. Decomposition: market part = beta60[t]*mkt_ret1[t], sector part = X['sector_ret1'][t] - mkt_ret1[t] (sector with >=5 tradable members), residual = the rest. Classes: M market-driven (mkt_ret1 <= -m); S sector-driven (mkt_ret1 > -2%, sector_ret1 <= -4%, residual > -6%); I idiosyncratic (mkt_ret1 > -1%, |sector_ret1| < 2%, residual <= -8%). Next-open entry, 5d and 21d net return and excess over the EW market. Clusters: episodes for M, calendar weeks for S and I. Report mean, median, share>0, era stability (4 eras) and the number of independent clusters.",
+   "params": "e in {8%, 12%}; m in {2%, 3%}; h in {5, 21}",
+   "rationale": "This tests the user's idea of buying individual stock panics. The knife study found a positive mean but a negative median, with gains clustered on crash days, which suggests the stock-level edge is really the market component. Splitting each drop into market, sector and residual parts tests that directly. It could also give a more frequent 'sector panic' trigger (about 100+ clusters) than the 12-25 market episodes.",
+   "expected": "M and S events are positive: hedging- or liquidity-driven selling reverts, while information-driven selling continues (Llorente, Michaely, Saar & Wang 2002 RFS; Da, Liu & Schaumburg 2014). I events have a negative median and a negative 21d drift (Chan 2003 JFE: news-driven moves drift and no-news moves reverse; a big idiosyncratic large-cap drop is usually news). If S has >=30 independent weeks with a positive median excess in >=3 of 4 eras, sector panic becomes a candidate second trigger. Otherwise, stock-level panic buying is restricted to days when the market is down.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "C1_contest_hybrid_sim_metrics",
+   "family": "validation",
+   "definition": "Run panic_sim.run_month_hybrid with starts every trading day from 2010-07-01 to 2026-08-24, k=2, engine costs. Configs: base only (current bot); hybrid default (-4%, S1 top-200, 5d, all-in); hybrid plus at most 2 frozen changes from R1/T1/S1/X1/R2. Metrics: (1) unconditional monthly mean, median, P(<=-10%), P(>=+10%), CVaR10, worst month. (2) Delta = hybrid - base per start, with a sanity check that Delta==0 in windows without a trigger. (3) Per-episode Delta_e = mean Delta over windows whose panic entry falls in episode e, with an episode-block bootstrap (B=5000) CI for E[Delta_e], share of episodes with Delta_e > 0 and the worst Delta_e. (4) Split by days left in the month at panic entry (>= H vs < H) and test the rule 'no panic entry if < 3 days remain'. (5) Module value = P(>=1 trigger in the 21d window | X['mkt_vol20'] tercile at start) x E[Delta | trigger], evaluated at the tercile on 2026-09-23 for the actual contest start.",
+   "params": "k in {2, 3}; configs <= 3 (base, default, one frozen modification set); bootstrap unit = episode (G=10)",
+   "rationale": "Month-level means over overlapping windows overstate certainty and mix no-trigger months (Delta=0) with a few trigger months. Reporting the conditional per-episode uplift with episode-clustered CIs, the tail change, and the regime-conditional trigger probability answers the real question: whether to carry the panic module into a month starting now in a high-vol 2026 regime. Pre-registered decision: adopt if the bootstrap 90% lower bound of E[Delta_e] > 0, the LOEO minimum of mean Delta_e > -0.5%, and the unconditional P(<=-10%) rises by <=1pp. TEST is reported but not used for acceptance, since it was already seen.",
+   "expected": "Unconditional uplift of +0.3 to +1.0%/month, coming from 3-5 episodes. Delta_e > 0 in about 60% of episodes. The 90% CI lower bound will sit near 0, so the likely verdict is inconclusive but positively skewed. P(trigger) should be about 30-40% in the top vol tercile vs under 10% in the bottom one (volatility clustering), so the module is worth carrying mainly because the contest starts in a high-vol regime.",
+   "lens": "risk_validation"
+  },
+  {
+   "id": "V4_nested_leave_one_episode_out",
+   "family": "validation",
+   "definition": "Grid of <=12 configs: trigger in {EW <= -4%, z <= -4 (V3)}; ranking in {S1, S2}; exit in {5d fixed, X=6% / H_max=10}; slots in {all-in, staged D=6%} (trim to 12). For each episode e (G=10, 2010-2026), select the config that maximizes the objective over all other episodes, excluding any within ±21 trading days of e, and record the selected config's Delta_e on e. The out-of-episode estimate is the mean and median over e. Also run a chronological version that selects using only episodes before e (fully causal). Report the optimism gap (in-sample best minus out-of-episode) and selection stability (share of folds that pick the modal config).",
+   "params": "objective in {median Delta_e, mean Delta_e - 0.5 x mean of the worst 3 episodes}; buffer = 21 days; grid <= 12",
+   "rationale": "IS/VAL/TEST splits hold only about 6-8, 6-8 and 2-4 episodes, and TEST is already seen, so a single IS-best selection is mostly noise. Nested LOEO measures the whole selection procedure, not just one config. The chronological variant mimics what the bot could have known in real time. Stability shows whether any refinement beats the simple default.",
+   "expected": "Optimism gap of 30-60% of the in-sample Delta. Expanding-window estimate positive but small (+0.5 to +2% per episode at 5d). If stability is below 50%, adopt the simplest default (-4%, S1, 5d, or X1 if it passes the plateau test) or run the panic module at reduced size (staged) rather than a tuned config.",
+   "lens": "risk_validation"
+  }
+ ],
+ "grid": {
+  "event_studies": [
+   {
+    "id": "EA1_residual_shock_grid",
+    "trigger": "Track A core. Event (i,t): calm_t (x_t > -2%) & no T0 day in [t-5,t] & z_t <= Z & ret1_t <= -R & ret1_t > -20% & not limdown_t. Z in {-2.5,-3.5,-4.5}, R in {4%,7%} = 6 cells per universe. z_t = (clip(ret1_t,+-30%) - b*_t*x_t)/sig_t, where b* is the 120-day shrunk beta (window t-120..t-1) and sig is the 60-day residual RMS (window t-60..t-1, floor 0.008).",
+    "selection": "Universe U200 (ok & caprank<=200) and MIDQ (ok & 200<caprank<=800 & val20_{t-1}>=3e9 & turnover val20_{t-1}/cap_{t-1} <= that day's MIDQ median & not attn20), reported separately. (a) All events equally weighted. (b) Top-2 per day by z ascending, which is what the contest trades. Robustness: top-2 per day by caprank instead of z.",
+    "entry": "Close t (closing auction), and open t+1 (skipped if o_{t+1} >= 1.295*c_t).",
+    "horizons": "1,3,5,10,21 trading days to the close (close entry: c_{t+h}/c_t; open entry: c_{t+h}/o_{t+1}). All net of 0.35%. For each: excess vs the same-day same-universe EW (same entry and exit), Delta_switch_A = net - r(base_top[t][1]) - 0.35%, median, win rate, date-clustered t-stat (average by date, then t over dates), share of P&L from the top-5 dates, per year, per era (E1..E4), KOSPI vs KOSDAQ, and treated minus a matched same-day placebo (same caprank quintile within the universe, same vol60_{t-1} tercile, |z|<1).",
+    "source_ids": "SP1_idio_sigma_shock, MPS1_residual_vs_beta_selection, VAL1_protocol_and_contest_integration, SPT2_quiet_idiosyncratic_drop"
+   },
+   {
+    "id": "EA2_volume_dryup_vs_spike",
+    "trigger": "EA1 base event with Z=-3, R=4%. Volume ratio vr_t = val_t/val20_{t-1}, bucketed into DRY vr<=a, MID a<vr<b, SPIKE vr>=b, with (a,b) in {(1.2,3),(1.5,4)}. Quiet 3-day grind variant: c_t/c_{t-3}-1 <= -8% & sum of idio over t-2..t <= -3*sig_t*sqrt(3) & max(val_{t-2..t})/val20_{t-3} <= a. Replication cell: attn20 names & ret1<=-10% & vr>=3 (the knife D6 set) must reproduce a negative 5d return.",
+    "selection": "U200 and MIDQ separately. Also 'quiet large cap': U200 with turnover_{t-1} and vol60_{t-1} both below the U200 median. All events, and top-2 per day by z.",
+    "entry": "Open t+1 (also close t for DRY and quiet large cap).",
+    "horizons": "1,5,10,21; mean, median, win rate, excess, events per year, per era.",
+    "source_ids": "SP3_volume_dryup_vs_spike, SPT2_quiet_idiosyncratic_drop, S4"
+   },
+   {
+    "id": "EA3_drop_shape",
+    "trigger": "(1) EA1 base event (Z=-3, R=4%). gap_t=o_t/c_{t-1}-1, intra_t=c_t/o_t-1, ibs_t=(c-l)/(h-l) (0.5 if h=l). Mutually exclusive classes: NEWS-GAP gap<=-G & intra<=+0.5%; ABSORB gap<=-G & intra>=+1% & vr>=2; INTRA-LOW gap>=-1% & intra<=-I & ibs<=0.2; INTRA-HI gap>=-1% & intra<=-I & ibs>0.2; OTHER. G, I in {3%,5%}. (2) Wider set: calm & caprank<=500 & ok & ret1<=-8%. G1 gap<=-5% & ibs>=0.6; G2 gap>-2% & ibs<=0.15; G3 locked limit-down (limdown_t & c_t<=l_t*(1+1e-6)).",
+    "selection": "All events per class; U200 and MIDQ for (1); caprank<=500 for (2).",
+    "entry": "Close t and open t+1.",
+    "horizons": "Overnight (c_t to o_{t+1}), 1, 5, 21; per class: events per year, net mean, median, win rate, excess.",
+    "source_ids": "SP2_gap_vs_intraday_news_proxy, SPT4_gap_vs_grind_intraday_decomposition"
+   },
+   {
+    "id": "EA4_sector_vs_single",
+    "trigger": "Static 2018 KSIC 'Sector' label (stock_master). secx_{i,t} = mean clip(ret1) of same-sector peers j!=i (c valid, raw>=1000, val20_{t-1}>=1e9); needs >=4 peers, else UNLABELLED. sbreadth = share of peers with ret1<=-3%. Event: calm & ok & ret1<=-R. SINGLE secx>=-1%; SECTOR secx<=-S & sbreadth>=0.5; MIXED otherwise. R in {5%,8%}, S in {2%,4%}. HM-rel5: caprank<=300 & rel5 = ret5_i - median ret5 of sector peers <= -10%. P1 decomposition (caprank<=300 or attn20, ret1<=-e, e in {8%,12%}): M market-driven x<=-m (m in {2%,3%}, cross-track); S sector-driven x>-2% & secx<=-4% & residual>-6%; I idiosyncratic x>-1% & |secx|<2% & residual<=-8%.",
+    "selection": "U200 (main), MIDQ (secondary). SECTOR pick: deepest decliner vs the largest-cap member with ret1<=-R/2. HM-rel5: top-2 most negative rel5 per day.",
+    "entry": "Open t+1.",
+    "horizons": "5, 21; clustered by calendar week; also the 2019+ subset (static labels) and label coverage by year.",
+    "source_ids": "SP4_single_name_vs_sector_wide, SPT3_sector_shock_vs_isolated_drop, P1_stock_panic_decomposition"
+   },
+   {
+    "id": "EA5_healthy_dip",
+    "trigger": "Pre-state at t-1: caprank_{t-1}<=200 & raw_t<=300k & c_{t-1}/hi250_{t-1}>=Q & 0<ret60_{t-1}<=0.40 & max20_{t-1}<0.10 & c_{t-1}>ma120_{t-1}. Drop at t: d_t=(c_t-ma20_t)/atr14_{t-1} <= -K & z_t<=-2 & calm & ret1_t>-15% & no T0 day in [t-5,t]. Q in {0.85,0.92}, K in {1.5,2.5,3.5}.",
+    "selection": "All events, and top-2 per day by d ascending.",
+    "entry": "Close t and open t+1.",
+    "horizons": "5, 10, 21, plus exit-rule returns: HOLD5, and EXIT-MA (first close >= ma5 from t+1, max 10 days).",
+    "source_ids": "SP5_dip_in_healthy_trend"
+   },
+   {
+    "id": "EA6_grind_vs_shock",
+    "trigger": "nd_t = consecutive down days ending at t (X['down_days']). cum = c_t/c_{t-nd}-1, mcum = M_t/M_{t-nd}-1, icum = cum - b*_t*mcum, worst = min ret1 over the streak. GRIND: U200 & nd>=N & icum<=-X & worst>=-4% & M_t/M_{t-5}-1 > -4%. SHOCK control: U200 & N-day icum<=-X & the single worst day in those N days <= -0.7X. N in {5,7}, X in {6%,10%}.",
+    "selection": "All events, and top-2 per day by icum ascending.",
+    "entry": "Close t.",
+    "horizons": "5, 21, plus exits HOLD5 and first close >= ma5 (max 7 days).",
+    "source_ids": "SP6_slow_grind_vs_single_shock"
+   },
+   {
+    "id": "EA7_risk_flags_and_earnings",
+    "trigger": "EA1 base events (Z=-3, R=4%, both universes). Flags at close t: F1 ret1<=-S1 or limdown (S1 in {15%,20%}); F2 ret1_{t-1}<=-10% & ret1_t<=-10%; F3 ret60_{t-1}>=B or max20_{t-1}>=15% (B in {30%,50%}); F4 KOSDAQ label & caprank>300 & date in Mar10-Apr15; F5 raw<2000 or val20_{t-1}<3e9; F6 c_{t-1}/hi250_{t-1}<=0.5. Earnings proxies: P1 calendar windows (Jan25-Feb15, Apr20-May16, Jul20-Aug16, Oct20-Nov15; first 10 sessions of Jan/Apr/Jul/Oct for caprank<=50). P2 own seasonality: flag_d = |gap_d|/sig_d>=3 or vr_d>=3 for some d in [t-252-w, t-252+w] or [t-63-w, t-63+w], w in {3,5}. EARN = P2, or (P1 & gap_t<=-2%).",
+    "selection": "Flagged vs kept, for each flag alone and for all flags combined; EARN vs NON-EARN; P1, P2, P1&P2.",
+    "entry": "Open t+1 and close t.",
+    "horizons": "5, 21.",
+    "source_ids": "RF1_permanent_repricing_avoid_list, RF2_earnings_announcement_proxy"
+   },
+   {
+    "id": "EA8_confirmation_entry_A",
+    "trigger": "SA1 and SA3 events (see contest configs). IMM = buy close t. C1 = buy close t+1 only if l_{t+1}>=l_t & c_{t+1}>=c_t. C2 = buy close t+1 only if c_{t+1}>o_{t+1} & ibs_{t+1}>=0.6 & o_{t+1}>=0.99*c_t. An event that fails its condition is dropped.",
+    "selection": "Top-2 per day by z.",
+    "entry": "As defined per variant.",
+    "horizons": "Hold 5 and 10 from entry; mean, median, win rate, 5th percentile, share of events kept, per era.",
+    "source_ids": "SP7_confirmation_entry"
+   },
+   {
+    "id": "EA9_exit_rules_A",
+    "trigger": "Each of SA1..SA7 (close-t entry).",
+    "selection": "Top-1 per day (a one-slot proxy).",
+    "entry": "Close t.",
+    "horizons": "Per-trade net return and average holding days under: E-FIX H in {3,5,10}; E-REC targets {c>=ma5, c>=c_{t0-1}, c>=c_t0+0.5*(c_{t0-1}-c_t0)} x fail overlay {off, on (sell at close if c<l_t0)}, max 10 days; E-TPSL (tp,sl) in {(+5%,-10%),(+8%,-12%)}, intraday, stop fills +0.2% slippage, both hit the same day = stop, max 10. Also report trades per slot-month = 21/avg hold.",
+    "source_ids": "EX1_mean_reversion_exits"
+   },
+   {
+    "id": "EA10_margin_call_timing",
+    "trigger": "Cross-track. Events with caprank<=1000 & 1000<=raw<=300k & val20>=1e9: (a) x_t<=-3% & ret1_t<=-7%; (b) ret1_t<=-10% & x_t>-3%. Margin exposure MX_{t-1} = mean of cross-sectional percentile ranks (liquid universe on t-1) of ret60_{t-1}, val20_{t-1}/cap_{t-1} and max20_{t-1}, plus 0.1 if KOSDAQ. Tercile cut-points fixed on IS events.",
+    "selection": "MX top tercile vs bottom tercile, by event type; also KOSPI-L vs KOSDAQ-L.",
+    "entry": "O1 open t+1, C1 close t+1, O2 open t+2, C2 close t+2, and O2 only if ret1_{t+1}<0.",
+    "horizons": "Common endpoints close t+6 and close t+21. Gap diagnostics g1, g2, g3 = o_{t+k}/c_{t+k-1}-1, and i1 = c_{t+1}/o_{t+1}-1.",
+    "source_ids": "SPT1_margin_call_D2_auction_timing, S3"
+   },
+   {
+    "id": "EB1_dose_response",
+    "trigger": "Every day with x_t<=-2%, bucketed three ways: (i) x: (-2,-3], (-3,-4], (-4,-5.5], <=-5.5; (ii) zm = x_t/sig_m,t (sig_m = RMS of x over t-60..t-1): (-2,-3], (-3,-4.5], <=-4.5; (iii) K200p z = k200_ret1_t / its own RMS over t-20..t-1, same z buckets.",
+    "selection": "(a) EW liquid market (beta part); (b) U200 deepest-2 and deepest-5 minus EW U200 (selection part); (c) Delta_switch of the K2 top-2 vs base_top[t][:2].",
+    "entry": "Open t+1.",
+    "horizons": "1, 5, 10, 21. Episode-clustered means within each bucket (G=10). Spearman correlation of bucket means vs severity. Day-level regression of (c) on |severity| with an episode block-bootstrap 90% CI for the slope. Leave-one-episode-out comparison of which definition better predicts the 5d episode return.",
+    "source_ids": "V3_dose_response"
+   },
+   {
+    "id": "EB2_trigger_catalogue",
+    "trigger": "T0 x<=-theta, theta in {3,4,5}%. T1 zm<=-Z & x<=-2.5%, Z in {3,4,5}. T2 breadth_dn3>=b, b in {0.6,0.75,0.9}. T3 k200_ret1<=-k, k in {2.5,3,4}%. T4 M_t/M_{t-3}-1<=-c & x<0 with 5-day refractory, c in {6,8,10}%. T5 S_t = RMS(x_{t-4..t})/RMS(x_{t-250..t-1}) >= theta & mkt_dd60_t<=-delta with 5-day refractory, (theta,delta) in {(2,8%),(2.5,10%),(3,15%)}. T7 x<=-3% & EW IBS_t>=0.5 & DD20_t<=-delta, delta in {8%,12%}. T6 confirmation (after T0): first u in [t0+1,t0+10] with x_u>=X, X in {0,+1%,+2%}, reset on a new T0 day.",
+    "selection": "K2 top-2 and top-10 (U200 by -ret1_t); for T6, the frozen T0 list re-ranked by c[u*]/c[t0-1]-1.",
+    "entry": "Open t+1 (T6: close u* and open u*+1).",
+    "horizons": "1, 3, 5, 10, 21. Per trigger: days per year, episodes for G in {5,10,21}, day-weighted mean, episode mean, median, share>0, LOEO min/max, mean without the best 1 and best 2 episodes, worst episode, per era (E1..E4), Delta_switch vs base top-2. Also a day-overlap (Jaccard) matrix between triggers.",
+    "source_ids": "T1, T2, MPT1_vol_stress_trigger, MPT2_confirmation_hammer_trigger, T3, V1_episode_core"
+   },
+   {
+    "id": "EB3_selection_horse_race",
+    "trigger": "T0 (x<=-4%) and x<=-3%.",
+    "selection": "From U200 unless stated: K2 deepest ret1; S-RES most negative z_t (w=1) and 3-day residual z (w=3), excluding idio<-20%; S-BETA highest b* among names with ret1 <= the U200 median; S-LEAD fallen leaders (bot pool at p=t-k: c_p/hi250_p>=q & ret60_p>0 & max20_p<0.10; k in {5,20}, q in {0.85,0.95}; rank ret3_t ascending); S-LOSER lowest ret{L}_{t-1}, L in {60,120,250}; low-vol defensives (lowest vol60_{t-1}); highest mom12_1_{t-1}; S-SECREL most negative ret1 - SR_sector (sector needs m members, m in {5,10}); worst-hit-sector leaders and most-resilient-sector leaders (largest-cap member of the 2 lowest or 2 highest SR sectors); S-HVOL vs S-LVOL (top vs bottom rrv tercile among U200 decliners, and among attn20); S-IBS (ibs>=0.3); KOSPI-L (KOSPI & caprank<=200) vs KOSDAQ-L (within-KOSDAQ cap rank<=100); K1 attention; EW U200; STAY (base_top[:2]); synthetic index K200p and KQ150p at 1x and 2x (2x drag 0.64%/yr, no sell tax). Random-pair percentile: 2000 random pairs from each rule's top-10. Stock shuffle: 2 random U200 names. Sector cap (<=1 name per sector) on/off for K2 and S-RES.",
+    "entry": "Open t+1.",
+    "horizons": "5, 10, 21, for top-2 and top-10. Each basket split into b* x EW market plus residual. Episode mean, median, worst-3 mean, share beating K2, leave-one-year-out, 95% episode-bootstrap CI of the difference vs K2, interaction with regime class F-a pass/fail, per era.",
+    "source_ids": "MPS1_residual_vs_beta_selection, S1, S1_panic_selection_beta_decomposed, S2, MPS3_fallen_leaders_vs_junk_losers, S3, S4, S5, MPS2_index_proxy_etf_in_panic, V1"
+   },
+   {
+    "id": "EB4_entry_timing_B",
+    "trigger": "T0 days; first-panic-day-of-episode only, and all days.",
+    "selection": "Baskets frozen at t: K2 top-2 and top-5, S-RES top-2, KOSPI-L top-2, KOSDAQ-L top-2.",
+    "entry": "E0 close t; E1 open t+1; E2 open t+2; E2c close t+2; E3 confirmation close u* (first u in [t+1,t+10] with x_u>=X, X in {0,+1%,+2%}; no trade if no confirmation) and open u*+1.",
+    "horizons": "Common endpoints close t+10 and close t+21 (timing not confounded by hold length). Diagnostics: g1, i1, g2, by market label and MX tercile. Episode mean, median, worst episode.",
+    "source_ids": "T1_entry_timing_confirmation, T3, SPT1_margin_call_D2_auction_timing, S3, T2_intraday_absorption"
+   },
+   {
+    "id": "EB5_regime_splits",
+    "trigger": "T0 days (plus the T1 and T2 cells descriptively), classified with information up to t-1 (the CLV class uses t): F-a mkt_on[t-1] OR deepcap_t (n40_t>=2 & M_t/max(M_{t-249..t})-1<=-25%, where n40 = number of T0 days in [t-40,t-1]); plus mkt_on alone and deepcap alone; F-c mkt_dd60[t-1]>=-d, d in {5,8,12}%; vol state: mkt_vol20[t-1] <= its median over [t-250,t-1] (calm) vs above; cascade ordinal n10 (0 vs >=1); mkt_above200[t-1]; CLV_t = EW (c-l)/(h-l) >= q vs < q (q in {0.3,0.4,0.5}); gap-driven (|EW gap| > |EW intraday|) vs intraday collapse; MON / POSTHOL (report only).",
+    "selection": "K2 top-2 and S-RES top-2.",
+    "entry": "Open t+1, and close t for the CLV and gap splits.",
+    "horizons": "1 (CLV only), 5, 21. Per-episode Delta_switch per side: N_ep, mean, median, worst. A split is flagged 'usable' only if each side has >=4 IS episodes and the IS median gap is at least as large as the mean gap.",
+    "source_ids": "RF1_panic_context_and_calendar, R1, R1_preregistered_regime_splits, T2_intraday_absorption"
+   },
+   {
+    "id": "EB6_exit_and_slot_curves_B",
+    "trigger": "T0 days.",
+    "selection": "K2 top-2 and S-RES top-2.",
+    "entry": "Open t+1 (staged schedules as defined).",
+    "horizons": "Fixed H in {3,5,7,10,15,21} (plateau curve). X-MKT: exit at the first close with M_u>=M_t0*(1+X), X in {3,6,9}%, H_max in {10,21}. Market stop at M_u<=M_t0*(1-Y), Y in {6,10}%. Recovery: M_u >= M_low + f*(M_pre - M_low), where M_pre = max(M_{t0-20..t0-1}), f in {0.5,1.0}, H_max 21. Slot schedules: all-in 2; staged 1+1 (second slot on a new T0 day within 10 days, or M<=M_t0*(1-D), D in {3,6}%); 3 slots, one per panic day, with a 200k price cap. Report per-episode mean, median and worst loss for each.",
+    "source_ids": "E1, X1_market_anchored_exit_plateau, EX1_staggered_entry_market_recovery_exit, R2_staged_entry_slots, T4"
+   },
+   {
+    "id": "EB7_placebos_B",
+    "trigger": "(1) Matched placebo days: x_u>-2%, >=21 trading days from any T0 day, matched to each episode's first T0 day on the mkt_vol20[u-1] tercile (vs its trailing 750-day distribution) and mkt_above200[u-1]. One draw per episode, 2000 repetitions. (2) Time shift: the same baskets entered at t_e+21 and t_e+42. (3) Stock shuffle: 2 random U200 names on t_e.",
+    "selection": "The same rule applied on the placebo day (K2 and S-RES top-2 and top-5).",
+    "entry": "Open next day.",
+    "horizons": "5, 21. p-value = share of placebo episode means >= the actual mean (and the same for the median).",
+    "source_ids": "V2_matched_placebo, VAL1_episode_level_inference"
+   }
+  ],
+  "contest_configs": [
+   {
+    "id": "R0_base",
+    "trigger": "none (current bot only)",
+    "selection": "base_top[t]: ok & caprank<=200 & ret60>0 & max20<0.10 & hi250 finite, ordered by c/hi250 descending",
+    "slots_rule": "k=2, 300k per slot, integer shares",
+    "entry": "Open t+1 after the signal day; 21-day rotation (keep names still in the top-2); empty slots refilled next open",
+    "exit": "Rotation; surge exit (ret1>=+10%: sell at that close); liquidate at the last close",
+    "filters": "Price <=300k. Limit-down deferral ON: a close sell with close<=prev*(1-Lim+0.005) is deferred to the next open (applies to every config).",
+    "source_ids": "baseline (reference, not eligible)"
+   },
+   {
+    "id": "R1_panic_default",
+    "trigger": "T0: x_t<=-4%",
+    "selection": "K2: U200 by -ret1_t, top-12 list",
+    "slots_rule": "ALL-IN hybrid on R0 (both slots switch)",
+    "entry": "Open t+1",
+    "exit": "FIX5 at close (entry day = day 1), then back to R0",
+    "filters": "none",
+    "source_ids": "lab_panic IS winner (reference; replication run with limit-down deferral OFF must match IS +0.9 / VAL +0.6 / TEST +5.5 within 0.2pp)"
+   },
+   {
+    "id": "B01_T1_zscore",
+    "trigger": "T1: zm_t = x_t/RMS(x_{t-60..t-1}) <= -4 AND x_t<=-2.5%",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "T1, V3_dose_response"
+   },
+   {
+    "id": "B02_T2_breadth",
+    "trigger": "breadth_dn3_t (share of liquid names with ret1<=-3%) >= 0.75",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "T2"
+   },
+   {
+    "id": "B03_T3_k200proxy",
+    "trigger": "k200_ret1_t (cap_{t-1}-weighted top-200 KOSPI, ret clipped +-30%) <= -3%",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "T2"
+   },
+   {
+    "id": "B04_T4_slide",
+    "trigger": "M_t/M_{t-3}-1<=-8% AND x_t<0; refractory: not fired in t-5..t-1",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "T2"
+   },
+   {
+    "id": "B05_T5_stress",
+    "trigger": "S_t = RMS(x_{t-4..t})/RMS(x_{t-250..t-1}) >= 2.5 AND mkt_dd60_t <= -10%; refractory 5 days",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "MPT1_vol_stress_trigger"
+   },
+   {
+    "id": "B06_T7_hammer",
+    "trigger": "x_t<=-3% AND EW IBS_t (liquid names with h>l) >= 0.5 AND DD20_t = M_t/max(M_{t-19..t})-1 <= -8%",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "MPT2_confirmation_hammer_trigger"
+   },
+   {
+    "id": "B07_T0_Fa",
+    "trigger": "T0 AND F-a: mkt_on[t-1] OR (n40_t>=2 AND M_t/max(M_{t-249..t})-1<=-25%)",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "F-a regime filter (bull-market shock or deep capitulation)",
+    "source_ids": "R1, RF1_panic_context_and_calendar"
+   },
+   {
+    "id": "B08_T0_Fc",
+    "trigger": "T0 AND F-c: mkt_dd60[t-1] >= -8% (shock from near highs)",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "F-c",
+    "source_ids": "R1_preregistered_regime_splits, T1"
+   },
+   {
+    "id": "B09_T6_confirm_close",
+    "trigger": "T6: anchor t0 = T0 day; u* = first u in [t0+1,t0+10] with x_u>=+1.0%; a new T0 day before u* resets t0 and rebuilds the list; no trade without confirmation",
+    "selection": "Frozen L = top-12 of U200_{t0} by -ret1[t0]; at u* keep names still ok and order by c[u*]/c[t0-1]-1 ascending",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Close u* (closing auction)",
+    "exit": "FIX5, counted from u*+1 (sell at close u*+5)",
+    "filters": "none",
+    "source_ids": "T3, MPT2_confirmation_hammer_trigger, T1_entry_timing_confirmation"
+   },
+   {
+    "id": "B10_T6_confirm_open",
+    "trigger": "T6 as in B09",
+    "selection": "As in B09",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open u*+1",
+    "exit": "FIX5 (sell at close u*+5)",
+    "filters": "none",
+    "source_ids": "T3, T1_entry_timing_confirmation"
+   },
+   {
+    "id": "B11_S_RES",
+    "trigger": "T0",
+    "selection": "S-RES: U200 by z_t ascending (residual in own-vol units, b* = 0.67*beta120+0.33 clipped [0.2,2.5]); exclude idio_t<-20%",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "MPS1_residual_vs_beta_selection, S1, S1_panic_selection_beta_decomposed"
+   },
+   {
+    "id": "B12_S_LEAD",
+    "trigger": "T0",
+    "selection": "S-LEAD: U200_t AND (at p=t-5) caprank_p<=200 & c_p/hi250_p>=0.90 & ret60_p>0 & max20_p<0.10; order by ret3_t = c_t/c_{t-3}-1 ascending",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "MPS3_fallen_leaders_vs_junk_losers, S2"
+   },
+   {
+    "id": "B13_S_LOSER",
+    "trigger": "T0",
+    "selection": "S-LOSER: U200_t ordered by ret120_{t-1} ascending (momentum-crash rebound)",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "S2, MPS3_fallen_leaders_vs_junk_losers"
+   },
+   {
+    "id": "B14_S_SECREL",
+    "trigger": "T0",
+    "selection": "S-SECREL: U200_t with a sector label whose SR_s (EW ret1 of ok names with val20>=3e9 in sector s) has >=5 members; order by ret1_i - SR_s(i) ascending; unlabelled names excluded",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "Static 2018 KSIC labels (minor look-ahead, noted)",
+    "source_ids": "S5, SPT3_sector_shock_vs_isolated_drop"
+   },
+   {
+    "id": "B15_S_HVOL",
+    "trigger": "T0",
+    "selection": "S-HVOL: U200_t & ret1_t <= U200 median & rrv_t = vr_t/median(vr over U200_t) in the top tercile of those decliners; order by -ret1_t",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "S4"
+   },
+   {
+    "id": "B16_S_IBS",
+    "trigger": "T0",
+    "selection": "K2 restricted to ibs_t >= 0.3 (the stock closed off its low)",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX5",
+    "filters": "none",
+    "source_ids": "SPT4_gap_vs_grind_intraday_decomposition"
+   },
+   {
+    "id": "B17_KQL_open2",
+    "trigger": "T0 on day t; signal shifted: mp_sig[t+1]=True, mp_rank_day[t+1]=t",
+    "selection": "KOSDAQ-L: KOSDAQ or KOSDAQ GLOBAL label & ok & within-KOSDAQ cap rank on t <= 100; order by -ret1_t",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+2 (the D+2 margin-call auction has passed); skip if o >= 1.295*prev close",
+    "exit": "FIX5 from entry (sell at close t+6)",
+    "filters": "none",
+    "source_ids": "S3, SPT1_margin_call_D2_auction_timing"
+   },
+   {
+    "id": "B18_IDX_K200p",
+    "trigger": "T0",
+    "selection": "A single synthetic instrument: K200p 1x. NAV_t = prod(1+k200_ret1); open_t = NAV_{t-1}*(1+sum w*(o_t/c_{t-1}-1)) with w = cap_{t-1} over top-200 KOSPI; raw price scaled to 35,000 at the first date; ETF tick 5 won",
+    "slots_rule": "ALL-IN hybrid; one position using the full freed capital (600k budget)",
+    "entry": "Open t+1",
+    "exit": "FIX5; costs fee 0.015% each side, slippage 0.05%, no sell tax",
+    "filters": "Contest ETF eligibility must be confirmed before adoption; special-cased index in the simulator, not an appended column",
+    "source_ids": "MPS2_index_proxy_etf_in_panic"
+   },
+   {
+    "id": "B19_K2_close_t",
+    "trigger": "T0",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid (base holdings sold at close t)",
+    "entry": "Close t (closing auction; the 15:19 decision approximated by the close); skip if close >= 1.295*prev close",
+    "exit": "FIX5 counted from t+1 (sell at close t+5)",
+    "filters": "none",
+    "source_ids": "T1_entry_timing_confirmation, T2_intraday_absorption"
+   },
+   {
+    "id": "B20_K2_open_t2",
+    "trigger": "T0 on t; mp_sig[t+1]=True, mp_rank_day[t+1]=t",
+    "selection": "K2 ranked at t",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+2",
+    "exit": "FIX5 from entry",
+    "filters": "none",
+    "source_ids": "SPT1_margin_call_D2_auction_timing, T1_entry_timing_confirmation"
+   },
+   {
+    "id": "B21_K2_H10",
+    "trigger": "T0",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "FIX10 at close",
+    "filters": "none",
+    "source_ids": "E1, X1_market_anchored_exit_plateau"
+   },
+   {
+    "id": "B22_K2_XMKT",
+    "trigger": "T0",
+    "selection": "K2",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "X-MKT: sell all mp positions at the first close u > entry day with M_u >= 1.06*M_t0; otherwise at close of day 10 (H_max=10)",
+    "filters": "none",
+    "source_ids": "X1_market_anchored_exit_plateau, E1, EX1_staggered_entry_market_recovery_exit"
+   },
+   {
+    "id": "B23_K2_XMKT_STOP",
+    "trigger": "T0; after a stop-out the trigger re-arms (at most 2 entries per episode)",
+    "selection": "K2 (fresh ranking on re-entry)",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "X-MKT (1.06, H_max 10) plus a market stop: sell at close if M_u <= 0.94*M_t0 (anchor = the entry's own trigger day)",
+    "filters": "none",
+    "source_ids": "X1_market_anchored_exit_plateau, E1"
+   },
+   {
+    "id": "B24_K2_STAGED",
+    "trigger": "T0 (first T0 day t0 of a 10-day window)",
+    "selection": "K2 of the relevant signal day, skipping names already held",
+    "slots_rule": "STAGED 1+1: at open t0+1 sell the worst-ranked base holding and buy K2 #1. The second slot switches at the next open after the first of (i) a new T0 day within t0+1..t0+10 or (ii) a close with M_t <= 0.94*M_t0 within 10 days. Otherwise the second slot stays in R0.",
+    "entry": "Open",
+    "exit": "FIX5 per slot from its own entry",
+    "filters": "none",
+    "source_ids": "R2_staged_entry_slots, T4, EX1_staggered_entry_market_recovery_exit"
+   },
+   {
+    "id": "B25_combo_Fa_RES_XMKT",
+    "trigger": "T0 AND F-a",
+    "selection": "S-RES",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Open t+1",
+    "exit": "X-MKT (1.06, H_max 10)",
+    "filters": "F-a",
+    "source_ids": "R1, S1, X1_market_anchored_exit_plateau"
+   },
+   {
+    "id": "B26_combo_T1_RES_STOP_STAGED",
+    "trigger": "T1 (zm<=-4 & x<=-2.5%)",
+    "selection": "S-RES",
+    "slots_rule": "STAGED 1+1 (second slot on a new T1 day within 10 days, or M<=0.94*M_t0)",
+    "entry": "Open",
+    "exit": "X-MKT-STOP (1.06 / 0.94, H_max 10) per slot",
+    "filters": "none",
+    "source_ids": "T1, S1, R2_staged_entry_slots, X1_market_anchored_exit_plateau"
+   },
+   {
+    "id": "B27_combo_confirm_RES_H10",
+    "trigger": "T6 confirmation (x_u>=+1%, W=10, reset on new T0)",
+    "selection": "Frozen L = top-12 of U200_{t0} by S-RES z; at u* order by c[u*]/c[t0-1]-1 ascending",
+    "slots_rule": "ALL-IN hybrid",
+    "entry": "Close u*",
+    "exit": "FIX10 counted from u*+1",
+    "filters": "none",
+    "source_ids": "T3, S1, MPT2_confirmation_hammer_trigger"
+   },
+   {
+    "id": "A01_SA1_close_H5",
+    "trigger": "SA1: CF_A & U200 & z_t<=-3.5 & ret1_t<=-4%. CF_A = ok & x_t>-2% & no T0 day in [t-5,t] & ret1>-20% & not limdown & t<e",
+    "selection": "z_t ascending",
+    "slots_rule": "REPLACE1 on R0: at most 1 sp position; use an empty slot first, otherwise sell the worst-ranked base holding at the same auction; no sp entry while an mp position is held; after the sp exit the slot refills from base_top next open",
+    "entry": "Close t",
+    "exit": "FIX5 (sell at close t+5) plus surge exit (ret1>=+10%: sell at that close)",
+    "filters": "CF_A",
+    "source_ids": "SP1_idio_sigma_shock"
+   },
+   {
+    "id": "A02_SA1_close_REC",
+    "trigger": "SA1",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC: sell at the first close u>=t+1 with c_u>=ma5_u, or FAIL c_u<l_t0; max 10 days",
+    "filters": "CF_A",
+    "source_ids": "SP1_idio_sigma_shock, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A03_SA1_open_H5",
+    "trigger": "SA1",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1 (base holding sold at open t+1)",
+    "entry": "Open t+1 (skip if o>=1.295*c_t)",
+    "exit": "FIX5 (sell at close t+5) plus surge exit",
+    "filters": "CF_A",
+    "source_ids": "SP1_idio_sigma_shock"
+   },
+   {
+    "id": "A04_SA1_C1_H5",
+    "trigger": "SA1 event at t-1 AND on day t: l_t>=l_{t-1} & c_t>=c_{t-1} (no new low); failed events are dropped",
+    "selection": "z_{t-1} ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 from t+1 plus surge exit",
+    "filters": "CF_A evaluated on t-1; x_t>-2% on the entry day",
+    "source_ids": "SP7_confirmation_entry"
+   },
+   {
+    "id": "A05_SA2_close_H5",
+    "trigger": "SA2 quiet shock: CF_A & U200 & z<=-3 & ret1<=-4% & vr_t<=2 & turn_{t-1}<=U200 median & vol60_{t-1}<=U200 median",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A",
+    "source_ids": "SPT2_quiet_idiosyncratic_drop, SP3_volume_dryup_vs_spike"
+   },
+   {
+    "id": "A06_SA2_close_REC",
+    "trigger": "SA2",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC (ma5 or FAIL, max 10)",
+    "filters": "CF_A",
+    "source_ids": "SPT2_quiet_idiosyncratic_drop, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A07_SA3_close_H5",
+    "trigger": "SA3 clean shock: SA1 AND NOT F1 (ret1<=-15%) AND NOT F2 (ret1_{t-1}<=-10%) AND NOT F3 (ret60_{t-1}>=0.30 or max20_{t-1}>=0.15) AND NOT F6 (c_{t-1}/hi250_{t-1}<=0.5) AND NOT EARN-P2 (w=5) AND NOT NEWS-GAP (gap<=-3% & intra<=+0.5%)",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A plus the flags",
+    "source_ids": "RF1_permanent_repricing_avoid_list, RF2_earnings_announcement_proxy, SP2_gap_vs_intraday_news_proxy"
+   },
+   {
+    "id": "A08_SA3_close_REC",
+    "trigger": "SA3",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC (ma5 or FAIL, max 10)",
+    "filters": "CF_A plus the flags",
+    "source_ids": "RF1_permanent_repricing_avoid_list, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A09_SA3_open_H5",
+    "trigger": "SA3",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Open t+1",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A plus the flags",
+    "source_ids": "RF1_permanent_repricing_avoid_list"
+   },
+   {
+    "id": "A10_SA3_C1_H5",
+    "trigger": "SA3 event at t-1 AND l_t>=l_{t-1} & c_t>=c_{t-1}",
+    "selection": "z_{t-1} ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A plus the flags",
+    "source_ids": "SP7_confirmation_entry, RF1_permanent_repricing_avoid_list"
+   },
+   {
+    "id": "A11_SA4_close_H5",
+    "trigger": "SA4 healthy dip: pre-state at t-1 (caprank<=200, c/hi250>=0.85, 0<ret60<=0.40, max20<0.10, c>ma120) AND d_t=(c_t-ma20_t)/atr14_{t-1}<=-2.5 AND z_t<=-2 AND ret1>-15%",
+    "selection": "d_t ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A",
+    "source_ids": "SP5_dip_in_healthy_trend"
+   },
+   {
+    "id": "A12_SA4_close_REC",
+    "trigger": "SA4",
+    "selection": "d ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC (ma5 or FAIL, max 10)",
+    "filters": "CF_A",
+    "source_ids": "SP5_dip_in_healthy_trend, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A13_SA5_close_H5",
+    "trigger": "SA5 mid-cap quiet shock: CF_A & MIDQ & z<=-3.5 & ret1<=-5% & vr<=2",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A (MIDQ excludes attn20 and high turnover)",
+    "source_ids": "SP1_idio_sigma_shock, SP3_volume_dryup_vs_spike"
+   },
+   {
+    "id": "A14_SA5_close_REC",
+    "trigger": "SA5",
+    "selection": "z ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC (ma5 or FAIL, max 10)",
+    "filters": "CF_A",
+    "source_ids": "SP1_idio_sigma_shock, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A15_SA6_grind_H5",
+    "trigger": "SA6 grind: CF_A & U200 & nd_t>=5 & icum_t<=-6% & worst ret1 in the streak >=-4% & M_t/M_{t-5}-1>-4%",
+    "selection": "icum ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A",
+    "source_ids": "SP6_slow_grind_vs_single_shock"
+   },
+   {
+    "id": "A16_SA6_grind_REC",
+    "trigger": "SA6",
+    "selection": "icum ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "REC (ma5 or FAIL c<l_t0, max 10)",
+    "filters": "CF_A",
+    "source_ids": "SP6_slow_grind_vs_single_shock, EX1_mean_reversion_exits"
+   },
+   {
+    "id": "A17_SA7_sector_flow",
+    "trigger": "SA7 sector-flow shock: CF_A & U200 & labelled & ret1<=-5% & secx<=-3% & sbreadth>=0.5 & (ret1-secx)>-5%",
+    "selection": "ret1 ascending",
+    "slots_rule": "REPLACE1",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A; static 2018 KSIC labels",
+    "source_ids": "SPT3_sector_shock_vs_isolated_drop, SP4_single_name_vs_sector_wide, P1_stock_panic_decomposition"
+   },
+   {
+    "id": "A18_M1_standalone_SA3",
+    "trigger": "SA3",
+    "selection": "z ascending",
+    "slots_rule": "Standalone signal mode, k=2, event positions only, cash when idle (no base bot)",
+    "entry": "Close t",
+    "exit": "FIX5 plus surge exit",
+    "filters": "CF_A plus the flags",
+    "source_ids": "VAL1_protocol_and_contest_integration (reference, not eligible)"
+   },
+   {
+    "id": "AB_combo",
+    "trigger": "Union: the IS-#1 track-B finalist's trigger plus the IS-#1 track-A finalist's trigger (composition written to the freeze JSON before VAL)",
+    "selection": "Each component's own selection",
+    "slots_rule": "R0 base; the B component takes priority: an mp entry sells base and sp positions (ALL-IN or STAGED as in its config); sp entries (REPLACE1) are blocked while any mp position is held",
+    "entry": "Each component's own",
+    "exit": "Each component's own",
+    "filters": "Each component's own",
+    "source_ids": "Built only if both tracks have an IS finalist; otherwise not run"
+   }
+  ],
+  "validation_protocol": "0. RUN AND FREEZE. One script, backtest/lab/panic2.py. It imports engine and panic_sim and extends them: panic_sim.Exit gains fail_low, mkt_tp, mkt_stop, rearm, h_max; Hybrid gains staged, base_off, idx_synthetic, per-config candidate lists, and limit-down deferral. The KSIC file is copied to data/lab/stock_master.csv.gz (FinanceData/stock_master, column 'Sector'). Load market.npz once, use float32 where possible, and compute beta/sigma in blocks of 500 columns.\nPhases:\n- P0: features and sanity checks.\n- P1: all event studies (descriptive).\n- P2: IS contest for all 48 configs. Then write backtest/results/lab_panic2_freeze.json with gate outcomes, finalists, the AB composition, the git hash and a sha256.\n- P3: VAL for all configs; criteria are applied to the frozen finalists only.\n- P4: TEST, run once. The script refuses P4 unless the freeze file exists with an unchanged hash.\nReport: backtest/results/lab_panic2.md. No definition, threshold or grid may change after P1 output is viewed. Any change is a new pre-registration, and TEST is then considered spent.\n\n1. COMMON DEFINITIONS. All decisions use data up to the close of the signal day t. Normalizers use windows ending t-1.\n- ok_t = c valid & raw>=1000 & val>0 & val20>=1e9 & raw<=300000.\n- U200 = ok & caprank<=200. MIDQ as in EA1. attn20 = X['attn20'].\n- x_t = mkt_ret1; M = I['mkt'].\n- Market z: sig_m,t = sqrt(mean x^2 over t-60..t-1); zm = x/sig_m.\n- Beta: r = clip(ret1, +-0.3); beta120 = nan-aware OLS slope of r on x over t-120..t-1, needing >=100 valid days; b* = clip(0.67*beta120+0.33, 0.2, 2.5).\n- Residual: idio = r - b*·x; sig = max(0.008, sqrt(mean idio^2 over t-60..t-1)), needing >=40 valid days; z = idio/sig.\n- vr = val/val20_{t-1}; gap, intra, ibs as in EA3.\n- Lim = 0.15 before 2015-06-15, else 0.30; limdown = c <= c_{t-1}*(1-Lim+0.005).\n- T0 = x<=-4%.\n- base_top = the R0 ranking. The base holding sold first is the one with the worst base rank; a name missing from the list counts as worst.\n- Delta_switch(h): B = basket net (0.35% cost) minus mean gross return of base_top[t][:2] over the same window, minus 0.35%. A = event net minus base_top[t][1] gross, minus 0.35%.\n- Episodes: panic_sim.episodes with G=10 (sensitivity G=5, 21), used for aggregation only.\n- Eras: E1 2010.07-2015.06.12; E2 2015.06.15-2018; E3 2019-2024.09; E4 2024.10-2026.09.\n- Market label: static per stock, a minor look-ahead that is noted.\n\n2. COSTS AND SIM. Event studies use a 0.35% round trip. Contest sims use engine costs: fee 0.015% each side, tax 0.20%, slippage max(0.05%, half tick) per side, +0.2% on intraday stops. The synthetic index pays no tax and has a 5-won tick. The account is 600k with k=2 slots and integer shares. No buy when open or close >= 1.295 x the prior close. Limit-down deferral is ON in all runs except the R1 replication.\nStarts:\n- IS: 2011-01-03..2018-12-28, every 2 trading days.\n- VAL: 2019-01-02..2024-09-30, every 2 trading days.\n- TEST: 2024-10-01..T-21, every day.\nEach window is 21 sessions and is liquidated at the last close. Per config and period, report: mean, median, P10d = P(month<=-10%), P10u, CVaR10, worst month, trades per month, share of windows with an mp or sp entry, mean with and without entries, and the last 12 months (descriptive).\n\n3. SANITY (P0; the script stops if any fails).\n- R1 replication with deferral OFF reproduces lab_panic.md (IS +0.9%, VAL +0.6%, TEST +5.5%) within +-0.2pp.\n- For every hybrid config, Delta = config - R0 per start is exactly 0 on windows with no signal in [s-1, e-1].\n- Print trigger days per year for every trigger, and sector-label coverage of U200 per year.\n\n4. EVENT GATES (IS 2011-2018 only; they decide eligibility, not ranking).\nTrack A: each trigger's contest entry with a 5-day fixed exit must meet all of:\n- >=200 events in >=100 distinct weeks;\n- median net > 0;\n- mean excess vs the same-day same-universe EW > 0 with date-clustered t >= 2.0;\n- top-5 dates < 40% of total net P&L;\n- no calendar year > 35% of P&L;\n- mean of (treated - matched placebo) > 0.\nConfigs whose trigger fails are ineligible. If no track-A trigger passes, track A has no finalists and the report concludes that the stock-specific panic edge is not tradable at this size.\nTrack B: each (trigger, selection, entry) at the config's horizon (FIX H; 10 for X-MKT) must meet all of:\n- >=4 IS episodes;\n- IS episode-mean Delta_switch > 0;\n- IS share of episodes with Delta > 0 >= 50%.\nFixed-H configs also need a plateau: the IS episode means at H-2 and H+2 have the same sign and at least 50% of the magnitude at H (from the EB6 curve; H=5 uses H in {3,7}; H=10 uses {7,15}).\n\n5. IS SELECTION. J = mean - 0.2*P10d (fractions). A config is eligible if it passes its gate, J_IS > J_IS(R0), and P10d_IS <= P10d_IS(R0) + 0.02. Finalists are the top-3 by J_IS per track, plus AB_combo if both tracks have an IS #1. That is at most 7 finalists. R0, R1 and A18 are references and never eligible. The freeze JSON is written here.\n\n6. VAL PASS (all required, finalists only; Delta = config - R0 on identical starts).\n- (i) mean_VAL - mean_VAL(R0) >= +0.30pp.\n- (ii) P10d_VAL <= P10d_VAL(R0) + 0.01.\n- (iii) Leave-one-out:\n  - Track B: for each VAL episode e of the config's own trigger (G=10), drop every start whose window contains an entry signal of e. The minimum over e of mean Delta must be > 0.\n  - Track A: leave one calendar year out (2019..2024), minimum > 0. Also drop starts containing the 5 dates with the largest sp P&L; the remaining mean Delta must be > 0.\n- (iv) Pooled IS+VAL:\n  - Track B: mean Delta without the top-2 episodes > 0, and the share of episodes with Delta_e > 0 >= 50%.\n  - Track A: the share of VAL quarters with mean Delta > 0 >= 55%.\n- (v) Placebo (pooled IS+VAL, 200 draws), real mean Delta >= the 80th percentile:\n  - Track B: fire the same overlay on matched placebo days (EB7 matching, same count per year).\n  - Track A: same entry dates, but 1 random U200 name with ret1<=0 and |z|<1.\n- (vi) AB_combo must also have VAL mean >= max(single components) - 0.2pp, and P10d no more than 1pp above the better single.\nAmong VAL passers in each track, adopt the one with the highest pooled IS+VAL J. VAL is never used to rank non-finalists.\n\n7. TEST (once, after the freeze).\nPass (a veto only): mean_TEST >= mean_TEST(R0) AND P10d_TEST <= P10d_TEST(R0) + 0.02.\nTrack B's TEST is contaminated, because lab_panic.md already saw 2024.10-2026.09 including 17 T0 days in 2026. So track B's TEST can only veto, never promote. Also report TEST excluding the 2026-03 episode, and TEST for all finalists (for transparency only).\n\n8. ADOPTION. A track's config is adopted only if it passes gate + IS selection + all VAL criteria + the TEST veto. If nothing passes, the bot stays R0, with no panic module.\nLabels:\n- 'strong' if the episode block-bootstrap (5000 resamples, pooled IS+VAL) 90% CI lower bound of E[Delta_e] is > 0;\n- otherwise 'weak / positively skewed'.\n\n9. DIAGNOSTICS (reported, never gates):\n- Nested chronological leave-one-episode-out over the eligible B configs (expanding window, >=5 prior episodes): out-of-episode mean and median, optimism gap, and selection stability.\n- Module value = P(>=1 trigger in 21 days | mkt_vol20 tercile at start) x E[Delta | trigger], evaluated at the tercile of 2026-09-23.\n- Month-end split (panic entry with <3 sessions left vs more).\n- Close-entry robustness: the same config with the entry moved to the next open.\n- Leave-one-out with G=5 and G=21.\n- 2019+ subset for sector-based configs.\n- Episode-level tables (N_ep, mean, median, share>0, worst, leave-one-out min/max, mean without the best 1 and 2) for every B config.",
+  "dropped": "Merged duplicates. Each group became one definition:\n- Stress triggers: MPT1 was folded into T5 (one mid-grid contest cell), and its grid moved to EB2. T1's z-trigger and V3's z-definition became one zm.\n- Residual selection: MPS1-S2, S1(c/d), S1_panic S2 and SP1 all became one S-RES/z with a single 120-day shrunk beta. S1(e) and the beta60 variant were dropped.\n- Leaders vs losers: MPS3 and S2 became S-LEAD and S-LOSER.\n- Quiet drops: SPT2 plus the SP1 quiet part became SA2.\n- Sector splits: SPT3, SP4 and P1 became EA4 plus SA7. They predict opposite signs, so the event study decides; only one sector contest cell was kept.\n- Drop shape: SPT4, SP2 and T2_intraday became EA3/EB5, and one contest cell (B16 IBS).\n- Market-anchored exits: E1, X1 and both EX1 hypotheses became X-MKT, X-MKT-STOP and REC.\n- Staged entry: R2, T4 and EX1-staggered became one STAGED 1+1 rule with D=6%.\n- Confirmation: MPT2-C1, T3 and T1_entry_timing became T6 (close u* / open u*+1).\n- Regime filters: RF1_panic_context, R1 and R1_prereg became F-a and F-c.\n- Validation: VAL1, V1, V1_episode_core, V4 and C1 were merged into the protocol.\n\nDropped from contest (kept as event studies):\n- 2x leveraged and KQ150p ETF (eligibility and pre-education rules; kept in EB3).\n- 3-slot variants (M3, T4 per-panic-day, S1 k=3): a 200k price cap shrinks U200. Kept in EB6.\n- E-TPSL brackets: the knife study showed them worse in 20 of 24 cells.\n- The SP7 C2 reversal bar and the P1/C2 pre-open auction variants.\n- The SPT1 tradable 'buy O2 if ret1_{t+1}<0' rule. It is tested only via B17/B20 timing and EA10.\n- S-BETA, low-vol, high-mom, worst/resilient-sector leaders, and the random-pair and shuffle checks (diagnostics).\n- MON/POSTHOL calendar tags: report-only, by design.\n\nParameters trimmed: each contest cell uses one pre-registered mid value, and the grids live in the event studies. That covers T1 Z=4, T2 b=0.75, T3 k=3%, T4 c=8%, T5 (2.5, 10%), T7 delta=8%, F-c d=8%, X-MKT 6%/10d, stop 6%, T6 X=+1%.\n\nDropped entirely:\n- Flows (foreign/institutional) diagnostic: covers only 2019-2024 and 1,275 stocks, so VAL-only and partial.\n- K1 attention panic configs and T0 with H21: already tested in lab_panic (K1 is kept only as an event-study baseline).\n- Track A 'fill-empty-slots' mode. R0 is almost always fully invested with 2 slots, so fill would fire only after a +10% surge exit, a few times a year, which is untestable. REPLACE1 (at most one event position, replacing the worst-ranked base holding) keeps at least 50% in the base edge, caps exposure to fat-tailed single-name events, and tests exactly the switch the live bot would make (about 0.7% total switching cost vs holding).\n\nLook-ahead notes rather than drops:\n- Static 2018 KSIC labels and static market labels (reported with a 2019+ subset).\n- Close-t entries use the official close as a proxy for the 15:19 decision (robustness: next-open entry is reported)."
+ },
+ "critique": "1. **Halted days leak (the most serious one).** Halted days are still rows in `market.npz`: Volume is 0 and open/high/low are set to the stale close. In marcap 2020 there are 22,477 such rows, every one with Open=0. About 100 codes sit in a halt of more than 30 days just before delisting. `run_month_hybrid` fills an order whenever `c>0`, so the sim buys and sells at stale prices during halts. FIX and REC exits therefore get out of names that were actually frozen, and knife events are enriched in exactly those names.\n   - Allow no fill on a day with `val==0`, and require `val_{t+1}>0` for open entries.\n   - A position that cannot be sold keeps its slot. Its cash is not recycled.\n   - Event-study forward returns use the first traded close on or after t+h.\n   - At window end, report both the stale mark and the first traded price after the halt.\n   - Report, per config, the share of events that hit a halt within 21 days.\n\n2. **Static labels are a look-ahead we can remove.** `build_marcap` keeps the last `Market` value per stock. 22 codes moved from KOSDAQ to KOSPI (for example Celltrion 2018, Kakao 2017). The daily `Market` column is still in `scratchpad/marcap/data/*.parquet`.\n   - Build a point-in-time T×N market label. Use it for K200p, KOSDAQ-L (B17), `is_kosdaq`, F4, the MX +0.1 term and every KOSPI/KOSDAQ split.\n   - The sector labels are a 2018-11 snapshot: delisted names are included, but every IPO after 2018 is missing, so coverage falls to 70% by 2026. Treat unlabelled names as their own group rather than dropping them in S-SECREL, A17 and EA4.\n   - Add a control run of K2 and SA1 restricted to labelled names. This shows whether an edge is just \"exclude young IPOs\".\n\n3. **Cash-dividend ex-dates create fake shocks.** KRX does not adjust the base price for cash dividends, so ex-dividend drops stay in `ret1`. High-yield U200 names (banks, holding companies, telecoms, insurers) print z≤−3.5 and ret1≤−4% on a flat-market ex-date, and these drops do not revert.\n   - Through 2022, exclude the December ex-date (the second-to-last trading day of the year) and the day after it from all track-A triggers.\n   - Add an EA7 flag: 3 or more same-sector U200 financials each down at least 3% on a calm day in December, or in February to April after the 2023 record-date reform.\n   - Report how many events this removes.\n\n4. **Rules that need the exact final close.** These rules cannot be known at 15:19:\n   - CF_A \"not limdown\"\n   - A04/A10 C1 (c_t≥c_{t−1}, l_t≥l_{t−1})\n   - EA3 G3 (locked limit-down)\n   - REC exit (c_u≥ma5_u, where ma5_u includes c_u; FAIL uses c<l_t0)\n   - X-MKT and market stop evaluated at the close\n   - T6 close-u* entry (x_u≥+1%)\n   - B19 (T0 at the close)\n   - vr thresholds: a 15:19 reading misses the closing-auction volume.\n\n   Required changes:\n   - (a) For each close-decided config, recompute the decision inputs from c·(1+ε), with ε~N(0, 0.4%) per stock plus a common market term, and use vr·0.9. Keep filling at the true close. Run 50 draws; the config stays eligible only if at least 75% of its IS Delta survives.\n   - (b) State how the live bot computes x_t and M_u at 15:19: about 1,500 names through the KIS multi-quote API, or a cap-weighted index proxy. Backtest that exact definition.\n   - (c) Make \"close decisions moved to the next open, sign preserved\" a required check, not a diagnostic.\n   - (d) Define U200, MIDQ and KOSDAQ-L membership with `caprank_{t−1}`.\n\n5. **Contamination has to be declared.**\n   - Track B's VAL is not clean. F-a, F-c, the market stop, staged entry and T6 were designed after `lab_panic` showed VAL failing because the 2020 and 2022 panics kept falling. TEST was also already seen.\n   - Make the nested chronological leave-one-episode-out a required criterion for track B, not a diagnostic. It uses an expanding window and reruns the whole selection inside each fold. Across all 2011–2026.9 episodes, the out-of-episode mean Delta must be above 0 and the median at least 0.\n   - Note that track A's volume-dry-up and capitulation ideas came from the full-sample knife study (2015–2026, which includes VAL and TEST).\n\n6. **Protocol hygiene.**\n   - Run P1 event studies on IS dates only until the freeze file is written. Produce the VAL and TEST columns in P3 and P4. Otherwise people see VAL results before any fix or re-registration, for example after a P0 failure.\n   - R1 replication: import `panic.run_hybrid` and compare it with `panic_sim` start by start, rather than checking against the rounded numbers in the report.\n   - List the known behaviour differences in advance. For example, when no candidate fills, `panic.py` holds cash for H days, while `panic_sim` goes back to the base strategy. A mismatch then cannot lead to ad-hoc code edits.\n\n7. **Too many degrees of freedom in track B.** There are 27 configs and roughly 10 IS episodes.\n   - (a) In P0, compute each trigger's IS day-overlap (Jaccard) with T0. Any trigger at 0.6 or above (probably T1, T2, T3, T5) is merged into T0 and is not eligible on its own.\n   - (b) The gate needs at least 6 IS episodes and at least 5 VAL episodes. Filtered variants that fall below this (F-a, F-c) are \"untestable\".\n   - (c) Allow at most one finalist per trigger family and one per exit family. FIX10, X-MKT and X-MKT-STOP trade the same entries.\n   - (d) Run the combos B25–B27 only if each component passed the IS gate.\n\n8. **No control for picking the best of many configs.** Choosing the top 3 by J_IS from 27 and 18 configs has no family-wise protection.\n   - Add an IS reality check at the episode level using vectorised Delta_switch. Fire every eligible config on EB7-matched placebo days 1,000 times and record, per draw, the best config's episode-mean Delta. A finalist must beat the 90th percentile of that maximum.\n   - Do the same for track A with the random-placebo-name draw.\n   - VAL criterion (v): raise it from the 80th percentile of 200 draws to the 90th percentile of at least 1,000.\n\n9. **Hidden confound from mid-month re-ranking.** R0 only rotates at the window start (window = 21 days). After a panic exit the hybrid sets `next_rebal=t+1`, so it gets a fresh re-ranking of the base book that R0 never gets. The track-A refill after an event exit does the same.\n   - Add a control R0-REFRESH: same trigger days, keep base through the H days, then rebalance on the same date as the hybrid.\n   - Add the equivalent control for track A.\n   - VAL (i) and the pooled leave-one-out must also pass against these controls.\n\n10. **Track-A gate statistics.**\n    - Clustering by date on overlapping 5-day and 21-day returns understates the standard error. Use Newey–West with lag h−1 on the daily-mean series, or non-overlapping calendar weeks as EA4 already does.\n    - Add Delta_switch_A>0 with t≥2. The real alternative to an event trade is the base holding it replaces, not the EW market.\n    - Require the mean excess to be positive in E1 (±15% limit) and E2 separately, because the limit regime changes which drops are excluded as limit-down.\n\n11. **Missing market-panic stock choices.** Add three contest cells, all T0 / open t+1 / FIX5, paid for by the triggers deleted in item 7 so the config count does not grow:\n    - **S-BETA:** highest b* among U200 names with ret1 at or below the U200 median. This is the clean beta bet that K2 only approximates.\n    - **S-MEGA:** caprank≤30 and raw price ≤300k, deepest ret1.\n    - **K2-EP:** rank by drawdown over the episode, c_t/max(c_{t−10..t})−1, instead of the one-day ret1.\n\n12. **Missing knife alternatives.**\n    - (a) Opening-gap fade, which daily data can test. Condition: gap_t≤−G with G in {4, 7}%, idiosyncratic gap (gap−b*·EWgap)/sig≤−3, and EW gap above −1%. Buy just after 09:00 at o_t with +0.3% extra slippage. Exits: close t, close t+1 or FIX5. Add it as EA3b plus one A config.\n    - (b) Non-fundamental calendar drops, expected to revert more: option expiry days, KOSPI200 June/December rebalancing, MSCI rebalancing days. Add as a positive EA7 flag.\n\n13. **Stock-status data we don't have.** There is no history of administrative designation (관리종목), investment warning/risk (투자경고/위험), short-term overheating single-price trading (단기과열/단일가) or delisting liquidation trading (정리매매). Knife names are enriched in these, the contest may bar them, and single-price trading changes close fills.\n    - Backtest proxy: exclude from track A any name with a `val==0` day or a limit-down day in [t−20, t−1]. Report the effect.\n    - Live: check stock status through the KIS API before any event or panic buy, and specify the fallback candidate order.\n\n14. **Risk and adoption metrics.** J = mean − 0.2·P10d over all windows dilutes the risk: triggers fire in about 10% of windows. Two changes:\n    - Also compute P10d and CVaR10 only on windows that contain a module entry. Require conditional CVaR10 ≥ R0's minus 2pp, in both IS and VAL.\n    - Make the final adopt / don't-adopt call on this: P(trigger in the contest month, given the current mkt_vol20 tercile) × pooled out-of-episode Delta must be at least 0.30pp."
+}

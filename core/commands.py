@@ -16,18 +16,30 @@ from core.kis import quotes, trading
 
 logger = logging.getLogger(__name__)
 
-HELP = """MA5 돌파 역발상 봇
+HELP = """자동매매 봇 (/config 로 전략 확인)
 
 /status   보유 포지션 + 손익
-/scan     지금 기준 시그널 스캔 (주문 안 함)
+/scan     오늘 순위 / 시그널 스캔 (주문 안 함)
 /history  최근 매매 이력
 /config   현재 설정
 /pause    자동매매 일시정지
 /resume   자동매매 재개
-/sell 종목코드  강제 청산"""
+/close 종목코드  자동매매 포지션 강제 청산
+/target [숫자|off]  목표 수익률 보기/바꾸기 (대회 모드)
+
+수동 매매: /buy /sell /bal /orders /cancel /fills /progress (/manual 로 자세히)"""
 
 
 def _cmd_status() -> str:
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        return contest.status_text()
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        return closebet.status_text()
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        return rotation.status_text()
     lines = []
     try:
         bal = trading.get_balance()
@@ -68,6 +80,25 @@ def _cmd_status() -> str:
 
 
 def _cmd_scan() -> str:
+    if config.STRATEGY == "contest":
+        from jobs import contest
+        ct = contest.get()
+        if not ct.get("hist"):
+            return "일봉 캐시가 아직 없다 — 08:20 준비 작업이 만든다 (cli prep)."
+        snaps, fail = contest.snapshots(ct)
+        return contest.scan_text(contest.decide(snaps, ct), snaps_n=len(snaps), fail=len(fail))
+    if config.STRATEGY == "closebet":
+        from jobs import closebet
+        cands, stats = closebet.candidates()
+        head = f"🌙 종가 베팅 후보 (지금 가격 기준) — {closebet.regime_on()[1]}\n거래대금 순위 {stats.get('rank', 0)} → 후보 {len(cands)}"
+        return head + "".join(f"\n· {c['name']}({c['ticker']}) {c['change_pct']:+.1f}% IBS {c['ibs']:.2f} "
+                              f"{c['value'] / 1e8:,.0f}억" for c in cands[:10])
+    if config.STRATEGY == "near_high":
+        from jobs import rotation
+        ranked, stats = rotation.load_ranking(build_if_missing=False)
+        if not ranked and not stats:
+            return "오늘 순위가 아직 없다. 계산에 3~5분 걸려서 채팅에선 안 돌린다 — 08:20 준비 작업이 만든다."
+        return rotation.format_ranking(ranked, stats)
     from jobs import scan as scan_job
     ranked, stats = scan_job.scan()
     return scan_job.format_result(ranked, stats)
@@ -92,7 +123,7 @@ def _cmd_history() -> str:
 
 def _cmd_sell(args: list[str]) -> str:
     if not args:
-        return "종목코드를 넣어라. 예: /sell 005930"
+        return "종목코드를 넣어라. 예: /close 005930"
 
     ticker = args[0].strip()
     pos = state.get_position(ticker)
@@ -134,8 +165,37 @@ def handle(text: str, chat_id: int) -> str:
         if cmd == "resume":
             state.set_paused(False)
             return "▶️ 자동매매를 재개했다."
-        if cmd == "sell":
+        if cmd == "close":
             return _cmd_sell(args)
+        if cmd == "target":
+            if config.STRATEGY != "contest":
+                return "목표 락은 대회 모드(STRATEGY=contest)에서만 쓴다."
+            from jobs import contest
+            return contest.set_target(args[0] if args else None)
+        # ── 수동 매매 (한투 OpenAPI 주문, 자동매매 상태에는 기록 안 함)
+        from core import manual
+        if cmd == "manual":
+            return manual.HELP
+        if cmd == "buy":
+            if len(args) < 3:
+                return "종목코드 가격 수량 순서\n예) /buy 005930 71500 10  ·  /buy 005930 시장가 1000만\n\n" + manual.HELP
+            return manual.buy(args[0], args[1], args[2])
+        if cmd == "sell":
+            if len(args) < 2:
+                return "종목코드 가격 [수량] 순서\n예) /sell 005930 72000 5  ·  /sell 005930 시장가\n\n" + manual.HELP
+            return manual.sell(args[0], args[1], args[2] if len(args) > 2 else None)
+        if cmd in ("bal", "balance"):
+            return manual.balance()
+        if cmd == "orders":
+            return manual.orders()
+        if cmd == "cancel":
+            return manual.cancel(args[0] if args else "all")
+        if cmd == "fills":
+            return manual.fills()
+        if cmd == "progress":
+            return manual.progress()
+    except ValueError as e:
+        return f"⚠️ {e}"
     except Exception as e:
         logger.exception("명령 처리 실패: %s", text)
         return f"⚠️ 처리 중 오류\n{type(e).__name__}: {e}"

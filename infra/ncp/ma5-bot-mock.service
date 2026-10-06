@@ -1,0 +1,21 @@
+[Unit]
+Description=ma5-bot 모의투자 (한투모투배틀 AI리그)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ma5-bot
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Seoul
+# 실전 봇(ma5-bot)과 같은 코드, 다른 설정 파일. 상태·토큰은 .env.mock 의 DATA_DIR(data-mock)에 따로 쌓인다.
+Environment=ENV_FILE=/opt/ma5-bot/.env.mock
+ExecStart=/opt/ma5-bot/.venv/bin/python /opt/ma5-bot/cli.py serve
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/ma5-bot/bot-mock.log
+StandardError=append:/opt/ma5-bot/bot-mock.log
+
+[Install]
+WantedBy=multi-user.target
