@@ -647,3 +647,64 @@ def set_target(arg: str | None = None) -> str:
         else:
             lines.append("🔒 지금 수익이 새 목표도 넘어서 락 유지")
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# 텔레그램 /deposit — 입출금을 기준 순자산에 반영
+# ══════════════════════════════════════════════════════════════
+DEPOSIT_HELP = ("/deposit 20만      20만원 입금 → 기준에 더함\n/deposit -10만     10만원 출금 → 기준에서 뺌\n"
+                "/deposit          입출금 기록 보기\n넣은 날 15:40 마감 판정 전에 보내야 입금이 수익으로 안 잡힌다.")
+
+
+def _parse_amount(arg: str) -> float | None:
+    """'20만' · '200000' · '-10만' · '1억 5천만' → 원. 못 읽으면 None."""
+    from core.manual import _parse_money
+    t = arg.replace(",", "").replace(" ", "").strip()
+    sign = -1.0 if t.startswith("-") else 1.0
+    t = t.lstrip("+-")
+    if t.replace(".", "", 1).isdigit():
+        v = float(t)
+    else:
+        v = _parse_money(t)
+    return sign * v if v else None
+
+
+def deposit(arg: str | None = None) -> str:
+    """
+    입금(+)·출금(−)을 기준 순자산에 더해, 돈을 넣고 뺀 게 수익률·목표 락에 잡히지 않게 한다.
+    기준은 기간 시작 순자산이라 입금을 그냥 두면 +100% 수익으로 보고 락을 걸어 전량 매도해버린다.
+    이미 락이 걸렸는데 고친 기준으로는 목표 미달이면 락을 풀고 시가 락 매도도 취소한다.
+    """
+    ct = get()
+    anchor = float(ct.get("anchor", 0) or 0)
+    log = list(ct.get("deposits") or [])
+    if arg is None:
+        hist = "\n".join(f"· {_md(d['date'])} {d['amount']:+,.0f}원" for d in log[-10:]) or "· 없음"
+        return f"💵 기준 순자산 {anchor:,.0f}원\n입출금 기록\n{hist}\n\n{DEPOSIT_HELP}"
+
+    amt = _parse_amount(arg)
+    if not amt:
+        return f"⚠️ 금액을 못 읽었다: {arg}\n\n{DEPOSIT_HELP}"
+    if anchor + amt <= 0:
+        return f"⚠️ 기준 순자산 {anchor:,.0f}원보다 많이 뺄 수는 없다"
+
+    new_anchor = anchor + amt
+    log.append({"date": _today(), "amount": amt})
+    fields = {"anchor": new_anchor, "deposits": log}
+    if config.DRY_RUN:                                   # 종이 계좌는 현금도 같이 움직인다
+        fields["paper_cash"] = float(ct.get("paper_cash", config.CT_PAPER_CAP) or 0) + amt
+    put(**fields)
+
+    lines = [f"💵 {'입금' if amt > 0 else '출금'} {abs(amt):,.0f}원 반영",
+             f"기준 순자산 {anchor:,.0f} → {new_anchor:,.0f}원"]
+    try:
+        nav = _nav()
+        pct = lock_pct(ct)
+        lines.append(f"지금 {nav / new_anchor - 1:+.2%} · 목표 {_target(pct)}")
+        if ct.get("locked") and not lock_hit(nav, new_anchor, pct):
+            pend = [x for x in ct.get("pending_exit") or [] if "락" not in x.get("reason", "")]
+            put(locked=False, locked_date="", pending_exit=pend)
+            lines.append("🔓 입금 때문에 걸린 락이라 해제 — 시가 락 매도 취소")
+    except Exception as e:
+        logger.warning("순자산 조회 실패: %s", e)
+    return "\n".join(lines)

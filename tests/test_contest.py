@@ -316,6 +316,31 @@ def main() -> int:
     config.TELEGRAM_ALLOWED_CHAT_IDS = []
     contest.put(lock_pct=None, locked=False, pending_exit=[], paper_cash=100_000_000.0)
 
+    print("── /deposit 입출금 ──────────────────────")
+    contest.put(lock_pct=None, locked=False, pending_exit=[], anchor=100_000_000.0, paper_cash=100_000_000.0, deposits=[])
+    check("금액 읽기: 20만 · 200000 · -10만 · 1억5천만",
+          [contest._parse_amount(x) for x in ("20만", "200,000", "-10만", "1억5천만")] == [200_000, 200_000, -100_000, 150_000_000])
+    msg = contest.deposit("1억")
+    ct = contest.get()
+    check("1억 입금 → 기준 2억, 종이 현금도 2억", ct["anchor"] == 200_000_000 and ct["paper_cash"] == 200_000_000 and "입금" in msg, msg.replace("\n", " / "))
+    r = contest.evaluate(force=True, send_report=False)
+    check("입금을 반영하면 +100% 로 안 보고 락 안 걸림", not r["locked"])
+    contest.put(anchor=100_000_000.0)                       # 반영을 깜빡해 락이 걸린 상황
+    r = contest.evaluate(force=True, send_report=False)
+    check("(반영 안 하면 입금이 +100% 로 보여 락)", r["locked"])
+    contest.put(paper_cash=100_000_000.0)
+    msg = contest.deposit("1억")
+    check("뒤늦게 반영해도 락 해제", not contest.get()["locked"] and "해제" in msg, msg.replace("\n", " / "))
+    msg = contest.deposit("-5천만")
+    check("출금 → 기준에서 뺌", contest.get()["anchor"] == 150_000_000 and "출금" in msg)
+    check("기준보다 많이 빼면 거절", "많이 뺄" in contest.deposit("-10억"))
+    check("못 읽는 금액 안내", "못 읽었다" in contest.deposit("많이"))
+    check("기록 보기", "입출금 기록" in contest.deposit(None) and len(contest.get()["deposits"]) == 3)
+    config.TELEGRAM_ALLOWED_CHAT_IDS = [1]
+    check("텔레그램 /deposit 20 만 (띄어 써도)", "200,000원 반영" in commands.handle("/deposit 20 만", 1))
+    config.TELEGRAM_ALLOWED_CHAT_IDS = []
+    contest.put(lock_pct=None, locked=False, pending_exit=[], anchor=100_000_000.0, paper_cash=100_000_000.0)
+
     print("── 알림 머리말 · 설정 파일 ─────────────")
     got, orig_call = [], notify._call
     notify._call = lambda method, payload: got.append(payload["text"])
