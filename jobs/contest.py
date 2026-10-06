@@ -41,6 +41,16 @@ def _period() -> str:
     return date.today().strftime("%Y-%m")
 
 
+def lock_pct(ct: dict | None = None) -> float:
+    """목표 락 %. 텔레그램 /target 으로 바꾼 값이 있으면 그걸, 없으면 CT_LOCK_PCT. 0 = 락 없음."""
+    v = (get() if ct is None else ct).get("lock_pct")
+    return float(v) if v is not None else config.CT_LOCK_PCT
+
+
+def _target(pct: float) -> str:
+    return f"+{pct:g}%" if pct > 0 else "없음"
+
+
 def _period_label(key: str) -> str:
     return f"대회 {key[5:7]}/{key[8:10]}~" if len(key) == 10 else key
 
@@ -135,7 +145,9 @@ def _period_reset(ct: dict) -> dict:
         logger.error("기간 시작 순자산 조회 실패: %s", e)
         anchor = float(ct.get("anchor", 0) or 0)
     ct = put(month=_period(), anchor=anchor, locked=False, locked_date="", fillers_done="")
-    notify.send(f"📅 대회 모드 새 기간 {_period_label(_period())} — 기준 순자산 {anchor:,.0f}원, 목표 +{config.CT_LOCK_PCT:g}% ({anchor * (1 + config.CT_LOCK_PCT / 100):,.0f}원)")
+    pct = lock_pct(ct)
+    notify.send(f"📅 대회 모드 새 기간 {_period_label(_period())} — 기준 순자산 {anchor:,.0f}원, 목표 {_target(pct)}"
+                + (f" ({anchor * (1 + pct / 100):,.0f}원)" if pct > 0 else ""))
     return ct
 
 
@@ -467,15 +479,16 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
     except Exception as e:
         logger.error("순자산 조회 실패: %s", e)
     anchor = float(ct.get("anchor", 0) or 0)
-    if nav is not None and not locked and lock_hit(nav, anchor):
+    pct = lock_pct(ct)
+    if nav is not None and not locked and lock_hit(nav, anchor, pct):
         locked = True
         put(locked=True, locked_date=_today())
-        pending = [{"ticker": p["ticker"], "reason": f"목표 +{config.CT_LOCK_PCT:g}% 달성 락"} for p in _positions()]
+        pending = [{"ticker": p["ticker"], "reason": f"목표 +{pct:g}% 달성 락"} for p in _positions()]
         lines += ["", f"🎯 목표 달성!  {nav / anchor - 1:+.1%}", "   내일 시가 전량 매도 → 기간 끝까지 현금"]
     put(pending_exit=pending)
     head = [f"🏁 {_md()} 마감" + ("  (종이 계좌)" if config.DRY_RUN else "")]
     if nav is not None:
-        head.append(f"💰 {_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+        head.append(f"💰 {_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 {_target(pct)})" if anchor else ""))
     head.append("")
     if not lines:
         lines.append("📌 보유 없음" + ("  🔒 락 상태" if locked else ""))
@@ -562,7 +575,7 @@ def status_text() -> str:
     lines = ["🏆 대회 모드" + ("  (DRY_RUN)" if config.DRY_RUN else ""), f"{config.CT_LOOKBACK}일 모멘텀 1위 {config.CT_SLOTS}종목 · 손절 {config.CT_STOP_PCT:g}% · 고점 {config.CT_TRAIL_PCT:g}% · {config.CT_HOLD_DAYS}일", ""]
     try:
         nav = _nav()
-        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 {_target(lock_pct(ct))})" if anchor else ""))
     except Exception as e:
         lines.append(f"잔고 조회 실패: {e}")
     if ct.get("locked"):
@@ -582,4 +595,55 @@ def status_text() -> str:
     if pend:
         names = {p["ticker"]: p.get("name", "") for p in pos}
         lines.append("⏰ 내일 시가 매도: " + ", ".join(f"{names.get(x['ticker'], x['ticker'])} ({x['reason'].split(' (')[0]})" for x in pend))
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# 텔레그램 /target — 목표 락 보기·바꾸기
+# ══════════════════════════════════════════════════════════════
+TARGET_HELP = "/target          지금 목표 보기\n/target 70       목표 +70% 로\n/target off      락 없이 끝까지 매매"
+
+
+def set_target(arg: str | None = None) -> str:
+    """
+    목표 락 % 를 보거나 바꾼다. 봇마다(실전·모의) 자기 상태에 따로 저장되고, 기간이 바뀌어도 유지된다.
+    이미 락이 걸렸는데 새 목표가 지금 수익보다 높으면(또는 off) 락을 풀고 내일 시가 락 매도도 취소한다.
+    순위권 밖이라 더 밀어붙여야 할 때 쓴다.
+    """
+    ct = get()
+    anchor = float(ct.get("anchor", 0) or 0)
+    try:
+        nav = _nav()
+    except Exception as e:
+        logger.warning("순자산 조회 실패: %s", e)
+        nav = None
+    now = f"{nav / anchor - 1:+.2%}" if (nav and anchor) else "?"
+
+    if arg is None:
+        pct = lock_pct(ct)
+        goal = f" ({_won(anchor * (1 + pct / 100))})" if (pct > 0 and anchor) else ""
+        state_txt = f"🔒 락 ({_md(ct.get('locked_date', ''))} 달성)" if ct.get("locked") else "매매 중"
+        return f"🎯 목표 {_target(pct)}{goal}\n기준 {_won(anchor)} · 지금 {now} · {state_txt}\n\n{TARGET_HELP}"
+
+    a = arg.strip().lower().lstrip("+").rstrip("%")
+    if a in ("off", "없음", "0"):
+        pct = 0.0
+    else:
+        try:
+            pct = float(a)
+        except ValueError:
+            return f"⚠️ 숫자로 넣어줘: {arg}\n\n{TARGET_HELP}"
+        if not 0 < pct <= 1000:
+            return f"⚠️ 0 초과 1000 이하로: {arg}"
+
+    before = lock_pct(ct)
+    put(lock_pct=pct)
+    lines = [f"🎯 목표 {_target(before)} → {_target(pct)}  (기준 {_won(anchor)} · 지금 {now})"]
+    if ct.get("locked"):
+        if pct <= 0 or (nav is not None and not lock_hit(nav, anchor, pct)):
+            pend = [x for x in ct.get("pending_exit") or [] if "락" not in x.get("reason", "")]
+            put(locked=False, locked_date="", pending_exit=pend)
+            lines.append("🔓 락 해제 — 내일 시가 락 매도 취소, 15:20 부터 다시 매수")
+        else:
+            lines.append("🔒 지금 수익이 새 목표도 넘어서 락 유지")
     return "\n".join(lines)

@@ -405,13 +405,13 @@ def summary() -> str:
         return (
             f"🏆 대회 모드  ({env} · {'DRY_RUN · 주문 안 보냄' if DRY_RUN else '실주문'})\n"
             f"계좌 {CANO[:4]}****{ACNT_PRDT_CD} · {EXCG_ID_DVSN_CD}\n\n"
-            f"목표  한 달 +{CT_LOCK_PCT:g}% 한 번 (평균 아님)\n"
+            f"목표  기간 중 +{CT_LOCK_PCT:g}% 한 번 (평균 아님 · 기본값, /target 으로 변경)\n"
             f"종목  코스피{CT_KOSPI_N}·코스닥{CT_KOSDAQ_N} 중\n"
             f"      {CT_LOOKBACK}일 수익률 상위 {CT_TOP_PCT:g}% 1위 {CT_SLOTS}종목\n\n"
             f"매수  {CT_BUY_TIME[:2]}:{CT_BUY_TIME[2:]} 종가 (동시호가)\n"
             f"매도  손절 −{CT_STOP_PCT:g}% / 고점 −{CT_TRAIL_PCT:g}% / {CT_HOLD_DAYS}일\n"
             f"      → 다음 날 {CT_SELL_TIME[:2]}:{CT_SELL_TIME[2:]} 시가\n"
-            f"락    월초 +{CT_LOCK_PCT:g}% 넘으면 전량 매도"
+            f"락    기준 대비 목표 넘으면 전량 매도"
             + (f"\n폭락  시장 −{CT_CRASH_MKT_PCT:g}%·{CT_CRASH_SIGMA:g}σ → 급락주 {CT_CRASH_HOLD}일" if CT_CRASH_ENABLED else "")
             + (f"\n조건  첫 매수 때 {CT_FILLER_N}종목 1주씩" if CT_FILLER_N else "")
         )

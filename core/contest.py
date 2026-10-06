@@ -185,8 +185,10 @@ def exit_reasons(pos: dict, close: float, today_idx: int) -> list[str]:
     return out
 
 
-def lock_hit(nav: float, anchor: float) -> bool:
-    return anchor > 0 and nav >= anchor * (1 + config.CT_LOCK_PCT / 100)
+def lock_hit(nav: float, anchor: float, pct: float | None = None) -> bool:
+    """순자산이 기준 대비 목표(pct, 기본 CT_LOCK_PCT)를 넘었나. pct ≤ 0 이면 락 없음."""
+    pct = config.CT_LOCK_PCT if pct is None else pct
+    return pct > 0 and anchor > 0 and nav >= anchor * (1 + pct / 100)
 
 
 def describe(s: Snap) -> str:

@@ -289,6 +289,33 @@ def main() -> int:
     check("기간이 바뀌면 기준 다시 잡음", contest.get()["month"] == date.today().strftime("%Y-%m") and contest.get()["anchor"] > 1)
     config.CONTEST_START = ""
 
+    print("── /target 목표 바꾸기 ──────────────────")
+    contest.put(lock_pct=None, locked=False, pending_exit=[], anchor=100_000_000.0, paper_cash=100_000_000.0)
+    check("기본 목표 = CT_LOCK_PCT", contest.lock_pct() == config.CT_LOCK_PCT)
+    check("/target 만 치면 지금 목표 보여줌", "🎯 목표 +30%" in contest.set_target(None))
+    contest.put(paper_cash=135_000_000.0)                  # 종이 순자산 +35%
+    contest.set_target("40")
+    r = contest.evaluate(force=True, send_report=False)
+    check("목표 +40% 면 +35% 에선 락 안 걸림", not r["locked"] and contest.lock_pct() == 40.0, str(r["locked"]))
+    contest.set_target("30")
+    r = contest.evaluate(force=True, send_report=False)
+    check("목표 +30% 로 낮추면 락", r["locked"])
+    msg = contest.set_target("50")
+    ct = contest.get()
+    check("락 중에 목표를 지금 수익(+35%)보다 올리면 락 해제 · 락 매도 예약 취소",
+          not ct["locked"] and not any("락" in x["reason"] for x in ct.get("pending_exit") or []) and "락 해제" in msg, msg.replace("\n", " / "))
+    contest.set_target("30"); contest.evaluate(force=True, send_report=False)
+    msg = contest.set_target("20")
+    check("새 목표도 이미 넘었으면 락 유지", contest.get()["locked"] and "락 유지" in msg, msg)
+    msg = contest.set_target("off")
+    check("off → 락 없음, 해제", contest.lock_pct() == 0 and not contest.get()["locked"] and not core_ct.lock_hit(1e12, 1.0, 0), msg)
+    check("숫자 아니면 안내", "숫자로" in contest.set_target("abc") and contest.lock_pct() == 0)
+    from core import commands
+    config.TELEGRAM_ALLOWED_CHAT_IDS = [1]
+    check("텔레그램 /target 70", "→ +70%" in commands.handle("/target 70", 1) and contest.lock_pct() == 70.0)
+    config.TELEGRAM_ALLOWED_CHAT_IDS = []
+    contest.put(lock_pct=None, locked=False, pending_exit=[], paper_cash=100_000_000.0)
+
     print("── 알림 머리말 · 설정 파일 ─────────────")
     got, orig_call = [], notify._call
     notify._call = lambda method, payload: got.append(payload["text"])
