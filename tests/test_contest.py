@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import date
@@ -135,6 +136,7 @@ trading.buy = fake_order("buy")
 trading.sell = fake_order("sell")
 trader.sync_fills = lambda: None
 trader.exit_position = fake_exit
+_orig_send = notify.send
 notify.send = lambda text, chat_id=None: SENT.append(text)
 contest._held_days = lambda pos: HELD.get(pos["ticker"], 0)
 
@@ -259,6 +261,51 @@ def main() -> int:
     check("상태 문구에 전략·계좌·보유", "대회 모드" in txt and "💰" in txt and "코닥H" in txt, txt.replace("\n", " / "))
     check("판정 문구", "판정" in contest.scan_text(plan))
     check("설정 요약", "대회 모드" in config.summary())
+
+    print("── 소액 계좌: 1위가 비싸면 다음 순위 ──────")
+    for p in contest._positions():
+        state.close_position(p["ticker"], PRICE[p["ticker"]], "테스트 정리")
+    for t in PRICE:
+        CHG[t] = 0.5; PRICE[t] = float(INFO[t][5])
+    contest.put(locked=False, paper_cash=13_500.0)   # 예산 13,432원: 폭주A 14,550 은 1주도 못 삼, 강세B 13,050 은 1주
+    plan = contest.decide(contest.snapshots(contest.get())[0], contest.get())
+    check("다음 순위 후보를 판정에 같이 저장", [b["ticker"] for b in plan.get("backup", [])][:1] == ["100020"], str(plan.get("backup")))
+    contest.put(plan=plan)
+    contest.buy_close(force=True)
+    pos = contest._positions()
+    check("폭주A 건너뛰고 강세B 1주 매수", [(p["ticker"], p["qty"]) for p in pos] == [("100020", 1)], str([(p["ticker"], p["qty"]) for p in pos]))
+    check("알림에 건너뛴 이유", "폭주A 1주 14,550원 > 예산 → 강세B" in SENT[-1], SENT[-1].replace("\n", " / "))
+    contest.put(paper_cash=100_000_000.0)
+
+    print("── 대회 기간 (CONTEST_START) ──────────")
+    config.CONTEST_START = "2000-01-03"
+    check("시작일이 지났으면 기간 키 = 시작일 (달이 바뀌어도 리셋 안 함)", contest._period() == "2000-01-03")
+    contest.put(month="2000-01-03", anchor=1.0)
+    contest.prep(force=True)
+    check("같은 기간이면 기준 순자산 유지", contest.get()["anchor"] == 1.0, str(contest.get()["anchor"]))
+    config.CONTEST_START = "2999-01-01"
+    check("시작 전이면 달 단위", contest._period() == date.today().strftime("%Y-%m"))
+    contest.prep(force=True)
+    check("기간이 바뀌면 기준 다시 잡음", contest.get()["month"] == date.today().strftime("%Y-%m") and contest.get()["anchor"] > 1)
+    config.CONTEST_START = ""
+
+    print("── 알림 머리말 · 설정 파일 ─────────────")
+    got, orig_call = [], notify._call
+    notify._call = lambda method, payload: got.append(payload["text"])
+    config.TELEGRAM_ALLOWED_CHAT_IDS = [1]
+    config.BOT_LABEL = "모의"; _orig_send("안녕")
+    config.BOT_LABEL = ""; _orig_send("안녕")
+    check("BOT_LABEL 이 있으면 [모의] 머리말, 비우면 그대로", got == ["[모의] 안녕", "안녕"], str(got))
+    notify._call, config.TELEGRAM_ALLOWED_CHAT_IDS = orig_call, []
+    env_file = os.path.join(config.DATA_DIR, "env.test")
+    with open(env_file, "w", encoding="utf-8") as f:
+        f.write("KIS_ENV=mock\nDATA_DIR=data-mock\n")
+    env = {k: v for k, v in os.environ.items() if k not in ("KIS_ENV", "DATA_DIR", "BOT_LABEL")}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run([sys.executable, "-c", "import config; print(config.KIS_ENV, config.DATA_DIR, config.BOT_LABEL)"],
+                         cwd=root, env={**env, "ENV_FILE": env_file, "PYTHONIOENCODING": "utf-8"},
+                         capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    check("ENV_FILE 로 설정 파일 선택 (모의 · data-mock · 머리말 모의)", out == "mock data-mock 모의", out)
 
     shutil.rmtree(config.DATA_DIR, ignore_errors=True)
     print(f"\n통과 {len(PASS)} / 실패 {len(FAIL)}")

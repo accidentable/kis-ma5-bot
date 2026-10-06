@@ -2,13 +2,13 @@
 jobs/contest.py — 대회 모드 (STRATEGY=contest): 한 달 안에 +30% 한 번을 노리는 집중 모멘텀. 계산은 core/contest.py.
 
 하루 일정 (전부 거래일만)
-  prep()       CT_PREP_TIME(08:20)   월초면 기준 순자산 기록·락 해제. 대상 350종목 일봉(어제까지) 받아 캐시
+  prep()       CT_PREP_TIME(08:20)   새 기간(달 또는 CONTEST_START)이면 기준 순자산 기록·락 해제. 대상 350종목 일봉(어제까지) 받아 캐시
   sell_open()  CT_SELL_TIME(08:45)   어제 마감에 정한 매도(손절·추적·만료·락·조건용) 를 장 시작 동시호가에 (하한가 지정가 → 시가 체결)
   check_open() CT_CHECK_TIME(09:05)  아직 안 팔린 것은 현재가 −2틱으로 다시
   scan()       CT_SCAN_TIME(15:05)   현재가 350개 → 폭락 판정 → 후보 순위 → 오늘 살 것 결정. 폭락 전환이면 보유를 지금(장중) 판다
   buy_close()  CT_BUY_TIME(15:20)    scan 이 정한 종목을 장 마감 동시호가 매수 (현재가 + CT_BUY_TICKS 틱, 상한가 이내)
   evaluate()   CT_EVAL_TIME(15:40)   종가로 손절·추적·만료 판정, 순자산으로 목표 락 판정 → 내일 아침 매도 목록. 마감 리포트
-상태는 state.json 의 "contest" 에 둔다: month, anchor(월초 순자산), locked, hist(일봉 캐시), universe, plan(오늘 결정), pending_exit, fillers_done
+상태는 state.json 의 "contest" 에 둔다: month, anchor(기간 시작 순자산), locked, hist(일봉 캐시), universe, plan(오늘 결정), pending_exit, fillers_done
 포지션은 공용 positions 에 strategy="contest", kind=momentum|crash|filler, entry_date, peak_close 로 기록한다.
 """
 from __future__ import annotations
@@ -29,8 +29,20 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-def _month() -> str:
+def _period() -> str:
+    """
+    목표 락·기준 순자산·조건용 매매를 세는 기간 키. 보통은 달("2026-10")이지만,
+    CONTEST_START 가 있고 그날이 지났으면 대회 시작일("2026-10-12") 하나로 끝까지 간다.
+    대회가 달을 넘어가도(10/12~11/20) 11/1 에 기준이 리셋되거나 락이 풀리지 않게 하려는 것.
+    """
+    start = config.CONTEST_START
+    if start and _today() >= start:
+        return start
     return date.today().strftime("%Y-%m")
+
+
+def _period_label(key: str) -> str:
+    return f"대회 {key[5:7]}/{key[8:10]}~" if len(key) == 10 else key
 
 
 def _open_day(force: bool) -> bool:
@@ -112,18 +124,18 @@ def _held_days(pos: dict) -> int:
 # ══════════════════════════════════════════════════════════════
 # 08:20 준비
 # ══════════════════════════════════════════════════════════════
-def _month_reset(ct: dict) -> dict:
-    if ct.get("month") == _month():
+def _period_reset(ct: dict) -> dict:
+    if ct.get("month") == _period():
         return ct
     if config.DRY_RUN and "paper_cash" not in ct:
         put(paper_cash=config.CT_PAPER_CAP)
     try:
         anchor = _nav()
     except Exception as e:
-        logger.error("월초 순자산 조회 실패: %s", e)
+        logger.error("기간 시작 순자산 조회 실패: %s", e)
         anchor = float(ct.get("anchor", 0) or 0)
-    ct = put(month=_month(), anchor=anchor, locked=False, locked_date="", fillers_done="")
-    notify.send(f"📅 대회 모드 새 달 {_month()} — 기준 순자산 {anchor:,.0f}원, 목표 +{config.CT_LOCK_PCT:g}% ({anchor * (1 + config.CT_LOCK_PCT / 100):,.0f}원)")
+    ct = put(month=_period(), anchor=anchor, locked=False, locked_date="", fillers_done="")
+    notify.send(f"📅 대회 모드 새 기간 {_period_label(_period())} — 기준 순자산 {anchor:,.0f}원, 목표 +{config.CT_LOCK_PCT:g}% ({anchor * (1 + config.CT_LOCK_PCT / 100):,.0f}원)")
     return ct
 
 
@@ -135,7 +147,7 @@ def build_universe() -> list[dict]:
 def prep(force: bool = False) -> dict:
     if not _open_day(force):
         return {"skipped": "휴장일"}
-    ct = _month_reset(get())
+    ct = _period_reset(get())
     uni = build_universe()
     hist, fail = {}, []
     need = config.CT_LOOKBACK + 25
@@ -157,7 +169,7 @@ def morning_brief(uni: list[dict], hist: dict, fail: list[str], ct: dict) -> str
     lines = [f"🌅 {_md()} 아침 브리핑" + (f"  (일봉 실패 {len(fail)})" if fail else ""), ""]
     try:
         nav = _nav()
-        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%})" if anchor else ""))
+        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%})" if anchor else ""))
     except Exception as e:
         logger.warning("브리핑 잔고 조회 실패: %s", e)
     pos = _positions()
@@ -175,7 +187,7 @@ def morning_brief(uni: list[dict], hist: dict, fail: list[str], ct: dict) -> str
         names = {p["ticker"]: p.get("name", "") for p in pos}
         lines.append("⏰ 08:45 매도: " + ", ".join(f"{names.get(x['ticker'], x['ticker'])} ({x['reason'].split(' (')[0]})" for x in pend))
     if ct.get("locked"):
-        lines += ["", f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 이번 달 매수 없음"]
+        lines += ["", f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 이번 기간 매수 없음"]
         return "\n".join(lines)
     snaps = []
     for s_ in uni:
@@ -226,22 +238,33 @@ def decide(snaps: list[Snap], ct: dict) -> dict:
     in_crash = any(p.get("kind") == "crash" for p in held)
     if crash_on and not in_crash:
         cands, stats = crash_candidates(snaps, cinfo["mkt"])
-        picks = [s for s in cands if s.ticker not in held_t][:config.CT_SLOTS]
+        rest = [s for s in cands if s.ticker not in held_t]
+        picks = rest[:config.CT_SLOTS]
+
+        def _crash_item(s):
+            return {"ticker": s.ticker, "name": s.name, "price": s.price, "upper_limit": s.upper_limit, "kind": "crash",
+                    "signal": {"change_pct": s.change_pct, "mkt": cinfo["mkt"], "val_ratio": s.val_ratio}}
         plan.update(mode="crash", stats=stats, sell_now=[p["ticker"] for p in held],
-                    buy=[{"ticker": s.ticker, "name": s.name, "price": s.price, "upper_limit": s.upper_limit, "kind": "crash",
-                          "signal": {"change_pct": s.change_pct, "mkt": cinfo["mkt"], "val_ratio": s.val_ratio}} for s in picks])
+                    buy=[_crash_item(s) for s in picks],
+                    backup=[_crash_item(s) for s in rest[config.CT_SLOTS:config.CT_SLOTS + config.CT_FALLBACK_N]])
         return plan
     if in_crash:
         plan["mode"] = "crash_hold"
         return plan
     cands, stats = rank_momentum(snaps)
     free = config.CT_SLOTS - len(held)
-    picks = [s for s in cands if s.ticker not in held_t][:max(free, 0)]
+    rest = [s for s in cands if s.ticker not in held_t]
+    picks = rest[:max(free, 0)]
+
+    def _mom_item(s):
+        return {"ticker": s.ticker, "name": s.name, "price": s.price, "upper_limit": s.upper_limit, "kind": "momentum",
+                "signal": {"ret_n": s.ret_n, "change_pct": s.change_pct}}
     plan.update(mode="momentum", stats=stats,
-                buy=[{"ticker": s.ticker, "name": s.name, "price": s.price, "upper_limit": s.upper_limit, "kind": "momentum",
-                      "signal": {"ret_n": s.ret_n, "change_pct": s.change_pct}} for s in picks],
+                buy=[_mom_item(s) for s in picks],
+                # 고른 종목이 1주도 못 살 만큼 비쌀 때(소액 실전) 15:20 에 내려갈 다음 순위
+                backup=[_mom_item(s) for s in rest[len(picks):len(picks) + config.CT_FALLBACK_N]] if picks else [],
                 top=[{"ticker": s.ticker, "name": s.name, "ret_n": s.ret_n, "change_pct": s.change_pct} for s in cands[:10]])
-    if picks and config.CT_FILLER_N > 0 and ct.get("fillers_done") != _month():
+    if picks and config.CT_FILLER_N > 0 and ct.get("fillers_done") != _period():
         chosen = {b["ticker"] for b in plan["buy"]} | held_t
         fill = [s for s in cands if s.ticker not in chosen][:config.CT_FILLER_N]
         plan["buy"] += [{"ticker": s.ticker, "name": s.name, "price": s.price, "upper_limit": s.upper_limit, "kind": "filler", "signal": {}} for s in fill]
@@ -276,7 +299,7 @@ def scan_text(plan: dict, snaps_n: int = 0, fail: int = 0) -> str:
              f"시장 {c.get('mkt', 0):+.2%}" + (f"  (폭락 기준 {c['threshold']:+.2%})" if c.get("threshold") else "") + (f"  조회 실패 {fail}" if fail else ""), ""]
     mode = plan.get("mode")
     if mode == "locked":
-        lines.append("🔒 이번 달 목표 달성 — 매수 없음")
+        lines.append("🔒 이번 기간 목표 달성 — 매수 없음")
     elif mode == "crash":
         lines.append(f"🚨 폭락 전환!  보유 {len(plan.get('sell_now', []))}종목 매도")
         for b in plan["buy"]:
@@ -307,6 +330,40 @@ def scan_text(plan: dict, snaps_n: int = 0, fail: int = 0) -> str:
 # ══════════════════════════════════════════════════════════════
 # 15:20 매수
 # ══════════════════════════════════════════════════════════════
+def _limit_qty(b: dict, budget: float) -> tuple[int, int]:
+    """장마감 동시호가 지정가와 수량. 조건용은 1주, 나머지는 예산(과 실계좌 미수없는 매수가능 수량) 안에서."""
+    try:
+        q = quotes.get_price(b["ticker"])
+        price, upper = float(q["price"]), float(q.get("upper_limit") or 0)
+    except Exception:
+        price, upper = float(b["price"]), float(b.get("upper_limit") or 0)
+    limit = offset_ticks(price, config.CT_BUY_TICKS)
+    if upper:
+        limit = min(limit, int(upper))
+    if b["kind"] == "filler":
+        return limit, 1
+    if config.DRY_RUN:
+        return limit, int(budget // limit)
+    try:
+        info = trading.get_buyable(b["ticker"], limit)
+        return limit, min(int(info["qty_no_margin"]), int(budget // limit))
+    except Exception as e:
+        logger.warning("%s 매수가능 조회 실패, 예산으로: %s", b["ticker"], e)
+        return limit, int(budget // limit)
+
+
+def _first_affordable(backups: list[dict], held: set[str], budget: float) -> tuple[dict, int, int] | None:
+    """다음 순위 중 1주 이상 살 수 있는 첫 종목. 15:05 가격으로 이미 예산을 넘는 건 조회도 안 한다."""
+    while backups:
+        b = backups.pop(0)
+        if b["ticker"] in held or float(b.get("price") or 0) > budget:
+            continue
+        limit, qty = _limit_qty(b, budget)
+        if qty > 0:
+            return b, limit, qty
+    return None
+
+
 def buy_close(force: bool = False) -> dict:
     if not _open_day(force):
         return {"skipped": "휴장일"}
@@ -329,30 +386,18 @@ def buy_close(force: bool = False) -> dict:
         logger.error("잔고 조회 실패: %s", e)
         return {"skipped": "잔고실패"}
     entered, skipped = [], []
-    real = [b for b in plan["buy"] if b["kind"] != "filler"]
     budget = nav * 0.995 / max(config.CT_SLOTS, 1)
+    backups = list(plan.get("backup") or [])
     for b in plan["buy"]:
         if b["ticker"] in held:
             continue
-        try:
-            q = quotes.get_price(b["ticker"])
-            price, upper = float(q["price"]), float(q.get("upper_limit") or 0)
-        except Exception:
-            price, upper = float(b["price"]), float(b.get("upper_limit") or 0)
-        limit = offset_ticks(price, config.CT_BUY_TICKS)
-        if upper:
-            limit = min(limit, int(upper))
-        if b["kind"] == "filler":
-            qty = 1
-        elif config.DRY_RUN:
-            qty = int(budget // limit)
-        else:
-            try:
-                info = trading.get_buyable(b["ticker"], limit)
-                qty = min(int(info["qty_no_margin"]), int(budget // limit))
-            except Exception as e:
-                logger.warning("%s 매수가능 조회 실패, 예산으로: %s", b["ticker"], e)
-                qty = int(budget // limit)
+        limit, qty = _limit_qty(b, budget)
+        if qty <= 0 and b["kind"] != "filler":
+            # 1주도 못 사면(소액 계좌에 비싼 종목) 다음 순위로 내려간다. 순위는 15:05 판정 그대로.
+            alt = _first_affordable(backups, held, budget)
+            if alt:
+                skipped.append(f"{b['name']} 1주 {limit:,}원 > 예산 → {alt[0]['name']}")
+                b, limit, qty = alt
         if qty <= 0:
             skipped.append(f"{b['name']} 자금부족"); continue
         r = trading.buy(b["ticker"], qty, limit)
@@ -366,9 +411,10 @@ def buy_close(force: bool = False) -> dict:
         state.add_position(pos)
         state.mark_traded_today(b["ticker"])
         _paper_buy(qty, limit)
+        held.add(b["ticker"])
         entered.append(pos)
     if any(p["kind"] == "filler" for p in entered):
-        put(fillers_done=_month())
+        put(fillers_done=_period())
     lines = [f"🌙 {_md()} 종가 매수" + ("  (DRY_RUN · 주문 안 보냄)" if config.DRY_RUN else "") + ("  🚨 폭락 전환" if plan.get("mode") == "crash" else ""), ""]
     for p in [p for p in entered if p["kind"] != "filler"]:
         lines.append(f"🟢 {p['name']} {p['qty']:,}주 @{p['entry_price']:,}원")
@@ -425,11 +471,11 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
         locked = True
         put(locked=True, locked_date=_today())
         pending = [{"ticker": p["ticker"], "reason": f"목표 +{config.CT_LOCK_PCT:g}% 달성 락"} for p in _positions()]
-        lines += ["", f"🎯 목표 달성!  {nav / anchor - 1:+.1%}", "   내일 시가 전량 매도 → 월말까지 현금"]
+        lines += ["", f"🎯 목표 달성!  {nav / anchor - 1:+.1%}", "   내일 시가 전량 매도 → 기간 끝까지 현금"]
     put(pending_exit=pending)
     head = [f"🏁 {_md()} 마감" + ("  (종이 계좌)" if config.DRY_RUN else "")]
     if nav is not None:
-        head.append(f"💰 {_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+        head.append(f"💰 {_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
     head.append("")
     if not lines:
         lines.append("📌 보유 없음" + ("  🔒 락 상태" if locked else ""))
@@ -516,11 +562,11 @@ def status_text() -> str:
     lines = ["🏆 대회 모드" + ("  (DRY_RUN)" if config.DRY_RUN else ""), f"{config.CT_LOOKBACK}일 모멘텀 1위 {config.CT_SLOTS}종목 · 손절 {config.CT_STOP_PCT:g}% · 고점 {config.CT_TRAIL_PCT:g}% · {config.CT_HOLD_DAYS}일", ""]
     try:
         nav = _nav()
-        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (월초 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
+        lines.append(f"💰 {'종이 ' if config.DRY_RUN else ''}{_won(nav)}" + (f"  (기준 대비 {nav / anchor - 1:+.2%} · 목표 +{config.CT_LOCK_PCT:g}%)" if anchor else ""))
     except Exception as e:
         lines.append(f"잔고 조회 실패: {e}")
     if ct.get("locked"):
-        lines.append(f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 월말까지 현금")
+        lines.append(f"🔒 {_md(ct.get('locked_date', ''))} 목표 달성 — 기간 끝까지 현금")
     pos = _positions()
     if not pos:
         lines.append("📌 보유 없음")

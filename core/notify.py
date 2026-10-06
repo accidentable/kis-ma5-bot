@@ -40,6 +40,8 @@ def _call(method: str, payload: dict) -> Optional[dict]:
 def send(text: str, chat_id: Optional[int] = None) -> None:
     """허용된 chat_id 전체(또는 지정한 하나)에게 메시지를 보낸다."""
     targets = [chat_id] if chat_id is not None else config.TELEGRAM_ALLOWED_CHAT_IDS
+    if config.BOT_LABEL:
+        text = f"[{config.BOT_LABEL}] {text}"
     if not targets:
         logger.info("[알림 대상 없음] %s", text.replace("\n", " / "))
         return

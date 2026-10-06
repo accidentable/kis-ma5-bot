@@ -9,11 +9,18 @@ git fetch origin
 git checkout "$BR"
 git pull --ff-only origin "$BR"
 ./.venv/bin/pip install -q -r requirements.txt
-for t in tests/test_rotation.py tests/test_panic.py tests/test_closebet.py tests/test_manual.py; do
+for t in tests/test_contest.py tests/test_mock.py tests/test_rotation.py tests/test_panic.py tests/test_closebet.py tests/test_manual.py; do
   ./.venv/bin/python "$t" > /tmp/ma5-test.log 2>&1 || { echo "테스트 실패: $t"; tail -20 /tmp/ma5-test.log; exit 1; }
 done
 ./.venv/bin/python cli.py check
-systemctl restart ma5-bot
+# 모의 봇(ma5-bot-mock)이 설치돼 있으면 같은 코드로 같이 점검·재시작한다
+SERVICES="ma5-bot"
+if systemctl is-enabled --quiet ma5-bot-mock 2>/dev/null; then
+  ENV_FILE=/opt/ma5-bot/.env.mock ./.venv/bin/python cli.py check
+  SERVICES="ma5-bot ma5-bot-mock"
+fi
+for svc in $SERVICES; do systemctl restart "$svc"; done
 sleep 3
-systemctl is-active ma5-bot
+for svc in $SERVICES; do echo "$svc: $(systemctl is-active "$svc")"; done
 tail -20 /opt/ma5-bot/bot.log
+[ -f /opt/ma5-bot/bot-mock.log ] && tail -10 /opt/ma5-bot/bot-mock.log || true

@@ -16,7 +16,8 @@ import os
 import logging
 from dotenv import load_dotenv
 
-load_dotenv()
+# 실전·모의 봇을 한 서버에서 따로 돌릴 때 systemd 가 ENV_FILE 로 설정 파일을 고른다 (없으면 .env).
+load_dotenv(os.getenv("ENV_FILE") or None)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,8 @@ _raw_ids = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")
 TELEGRAM_ALLOWED_CHAT_IDS: list[int] = [
     int(x.strip()) for x in _raw_ids.split(",") if x.strip().lstrip("-").isdigit()
 ]
+# 알림 머리말. 실전·모의 봇을 같이 돌릴 때 어느 쪽 메시지인지 바로 보이게 한다. 비우면 머리말 없음.
+BOT_LABEL: str = os.getenv("BOT_LABEL", "모의" if IS_MOCK else "실전").strip()
 
 # ══════════════════════════════════════════════════════════════
 # 전략 선택
@@ -146,7 +149,8 @@ PANIC_CANDIDATES: int = _env_int("PANIC_CANDIDATES", 15)                # 저장
 PANIC_SCAN_TIME: str = os.getenv("PANIC_SCAN_TIME", "1535").strip()     # 급락 판정 (시총 1500 × 일봉, 모의투자 약 10분)
 
 # ── 대회 수상 조건 (수동 매매 /progress 가 비교한다) ───────────
-CONTEST_START: str = os.getenv("CONTEST_START", "").strip()          # 예: 2026-11-02. 비우면 이번 달 1일
+# 예: 2026-10-12. 비우면 이번 달 1일. 대회 모드는 이 날부터 목표 락·조건용 매매를 한 기간으로 센다 (달이 바뀌어도 리셋 안 함)
+CONTEST_START: str = os.getenv("CONTEST_START", "").strip()
 CONTEST_MIN_AMOUNT: float = _env_float("CONTEST_MIN_AMOUNT", 500_000_000)   # 매매금액 (체결, 매수+매도)
 CONTEST_MIN_DAYS: int = _env_int("CONTEST_MIN_DAYS", 5)                    # 매매일수
 CONTEST_MIN_STOCKS: int = _env_int("CONTEST_MIN_STOCKS", 5)                # 매매종목수 (코스피200 · 코스닥150)
@@ -185,7 +189,8 @@ CT_CRASH_VR_MAX: float = _env_float("CT_CRASH_VR_MAX", 3.0)      # 거래대금�
 CT_CRASH_IDIO_MULT: float = _env_float("CT_CRASH_IDIO_MULT", 3.0)  # 종목 낙폭이 시장 낙폭의 N 배 이상이면 제외 (혼자 빠짐)
 CT_CRASH_HOLD: int = _env_int("CT_CRASH_HOLD", 5)                # 전환 보유 거래일
 CT_CRASH_MIN_N: int = _env_int("CT_CRASH_MIN_N", 100)           # 시장 평균을 믿으려면 현재가가 잡힌 종목이 이만큼은 돼야
-CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 월 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_FILLER_N: int = _env_int("CT_FILLER_N", 4)                    # 대회 '지수 종목 5개 거래' 용: 기간 첫 매수 때 다음 순위 N 종목 1주씩 (다음 날 매도). 0 = 끔
+CT_FALLBACK_N: int = _env_int("CT_FALLBACK_N", 10)              # 고른 종목이 1주도 못 살 만큼 비싸면 다음 순위로 내려가는 최대 수 (소액 실전용)
 CT_PAPER_CAP: float = _env_float("CT_PAPER_CAP", 100_000_000)   # DRY_RUN 일 때 수량·순자산 계산에 쓰는 종이 계좌 (실계좌 잔고 대신)
 CT_BRIEF_N: int = _env_int("CT_BRIEF_N", 5)                      # 아침 브리핑에 보여줄 후보 수 (어제 종가 기준 모멘텀 상위)
 CT_BUY_TICKS: int = _env_int("CT_BUY_TICKS", 5)                  # 장마감 동시호가 매수 지정가 = 현재가 + N틱 (상한가 이내)
