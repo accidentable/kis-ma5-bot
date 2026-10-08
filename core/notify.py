@@ -72,6 +72,8 @@ def set_commands() -> None:
         {"command": "resume", "description": "자동매매 재개"},
         {"command": "target", "description": "목표 수익률 보기/바꾸기 (/target 70, /target off)"},
         {"command": "deposit", "description": "입출금 반영 (/deposit 20만, /deposit -10만)"},
+        {"command": "sync", "description": "손매매 반영 (계좌 잔고에 봇 기록 맞추기)"},
+        {"command": "adopt", "description": "수동 보유 종목을 봇에게 넘기기 (/adopt 종목코드)"},
         {"command": "buy", "description": "수동 매수 (/buy 종목 가격 수량)"},
         {"command": "sell", "description": "수동 매도 (/sell 종목 가격 [수량])"},
         {"command": "bal", "description": "잔고 · 예수금"},

@@ -27,6 +27,8 @@ HELP = """자동매매 봇 (/config 로 전략 확인)
 /close 종목코드  자동매매 포지션 강제 청산
 /target [숫자|off]  목표 수익률 보기/바꾸기 (대회 모드)
 /deposit 금액   입출금 반영 (예: /deposit 20만, /deposit -10만) — 넣은 날 15:40 전에
+/sync     손매매 반영 — 계좌 잔고에 봇 기록 맞추기 (08:20·15:40 자동)
+/adopt 종목코드  수동으로 산 종목을 봇에게 넘기기
 
 수동 매매: /buy /sell /bal /orders /cancel /fills /progress (/manual 로 자세히)"""
 
@@ -178,6 +180,13 @@ def handle(text: str, chat_id: int) -> str:
                 return "입출금 반영은 대회 모드(STRATEGY=contest)에서만 쓴다."
             from jobs import contest
             return contest.deposit("".join(args) if args else None)
+        if cmd in ("sync", "adopt"):
+            if config.STRATEGY != "contest":
+                return "계좌 맞춤은 대회 모드(STRATEGY=contest)에서만 쓴다."
+            from jobs import contest
+            if cmd == "adopt":
+                return contest.adopt(args[0] if args else None)
+            return contest.sync_text(contest.reconcile(include_today=False, announce=False))
         # ── 수동 매매 (한투 OpenAPI 주문, 자동매매 상태에는 기록 안 함)
         from core import manual
         if cmd == "manual":

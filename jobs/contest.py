@@ -159,6 +159,7 @@ def build_universe() -> list[dict]:
 def prep(force: bool = False) -> dict:
     if not _open_day(force):
         return {"skipped": "휴장일"}
+    _auto_reconcile()
     ct = _period_reset(get())
     uni = build_universe()
     hist, fail = {}, []
@@ -447,6 +448,7 @@ def evaluate(force: bool = False, send_report: bool = True) -> dict:
     if not _open_day(force):
         return {"skipped": "휴장일"}
     trader.sync_fills()
+    _auto_reconcile()
     ct = get()
     pending, lines, fillers = [], [], []
     for p in _positions():
@@ -708,3 +710,121 @@ def deposit(arg: str | None = None) -> str:
     except Exception as e:
         logger.warning("순자산 조회 실패: %s", e)
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# 손매매 반영 — /sync · /adopt, 08:20 준비와 15:40 마감 때 자동
+# ══════════════════════════════════════════════════════════════
+def _sold_price_today(ticker: str) -> float | None:
+    """오늘 이 종목 매도 체결 평균가. 없거나 조회 실패면 None."""
+    try:
+        fills = [f for f in trading.get_today_fills() if f["ticker"] == ticker and f["side"] == "sell"]
+    except Exception as e:
+        logger.warning("%s 체결 조회 실패: %s", ticker, e)
+        return None
+    qty = sum(int(f["qty"]) for f in fills)
+    return sum(int(f["qty"]) * float(f["avg_price"]) for f in fills) / qty if qty else None
+
+
+def _auto_reconcile() -> None:
+    """작업 시작 때 손매매를 반영한다. 실패해도 작업은 계속한다."""
+    try:
+        reconcile(include_today=True, announce=True)
+    except Exception as e:
+        logger.warning("계좌 맞춤 실패: %s", e)
+
+
+def reconcile(include_today: bool = True, announce: bool = True) -> dict:
+    """
+    계좌 잔고를 진실로 보고 봇 포지션을 맞춘다 (손매매·앱 매매 반영).
+      봇엔 있는데 계좌에 없음 → '수동 매도' 로 이력에 남기고 정리 (오늘 매도 체결가, 없으면 현재가)
+      수량이 다름           → 계좌 수량으로
+      계좌엔 있는데 봇은 모름 → 수동 보유. 봇은 안 건드린다 (/adopt 로 넘길 수 있다)
+    include_today=False 면 오늘 산 미체결 포지션은 건드리지 않는다 (장중 /sync — 동시호가 체결 전일 수 있다).
+    DRY_RUN 은 종이 포지션이라 실계좌와 비교하지 않는다.
+    """
+    if config.DRY_RUN:
+        return {"skipped": "DRY_RUN"}
+    bal = trading.get_balance()
+    held = {h["ticker"]: h for h in bal["holdings"]}
+    closed, resized, unfilled = [], [], []
+    for p in _positions():
+        h = held.get(p["ticker"])
+        if not include_today and p.get("entry_date") == _today() and not p.get("filled"):
+            continue
+        if h is None and p.get("entry_date") == _today() and not p.get("filled"):
+            state.remove_position(p["ticker"])               # 오늘 낸 매수가 안 채워졌다 — 판 게 아니라 이력엔 안 남긴다
+            unfilled.append({"ticker": p["ticker"], "name": p.get("name", "")})
+            continue
+        if h is None:
+            px = _sold_price_today(p["ticker"])
+            if px is None:
+                try:
+                    px = float(quotes.get_price(p["ticker"])["price"])
+                except Exception:
+                    px = float(p.get("entry_price", 0) or 0)
+            rec = state.close_position(p["ticker"], px, "수동 매도 (계좌에 없음)")
+            if rec:
+                closed.append(rec)
+        elif int(h["qty"]) != int(p["qty"]):
+            state.update_position(p["ticker"], qty=int(h["qty"]))
+            resized.append({"ticker": p["ticker"], "name": p.get("name", ""), "from": int(p["qty"]), "to": int(h["qty"])})
+    if closed or unfilled:
+        gone = {r["ticker"] for r in closed + unfilled}
+        put(pending_exit=[x for x in get().get("pending_exit") or [] if x["ticker"] not in gone])
+    bot_t = {p["ticker"] for p in _positions()}
+    manual = [h for t, h in held.items() if t not in bot_t]
+    out = {"closed": closed, "resized": resized, "unfilled": unfilled, "manual": manual, "cash": bal["cash"], "nav": bal["net_asset"]}
+    if announce and (closed or resized or unfilled):
+        notify.send(sync_text(out, changed_only=True))
+    return out
+
+
+def sync_text(r: dict, changed_only: bool = False) -> str:
+    if r.get("skipped"):
+        return "DRY_RUN 이라 실계좌와 맞추지 않는다."
+    lines = ["🔄 계좌 맞춤"]
+    for c in r["closed"]:
+        lines.append(f"🔴 {c.get('name', '')} {int(c.get('sold_qty', 0)):,}주 정리 — 계좌에 없음 (수동 매도로 기록, {c['pnl_pct']:+.2f}%)")
+    for x in r.get("unfilled", []):
+        lines.append(f"⚪ {x['name']} 오늘 매수 미체결 — 포지션 지움")
+    for x in r["resized"]:
+        lines.append(f"✏️ {x['name']} 수량 {x['from']:,} → {x['to']:,}주")
+    if not changed_only:
+        if not (r["closed"] or r["resized"] or r.get("unfilled")):
+            lines.append("봇 포지션 = 계좌 (바뀐 것 없음)")
+        bot = _positions()
+        lines.append("")
+        lines.append("🤖 봇 관리: " + (", ".join(f"{p.get('name', '')} {int(p['qty']):,}주" for p in bot) if bot else "없음"))
+    if r["manual"]:
+        lines.append("✋ 수동 보유 (봇이 안 건드림): " + ", ".join(f"{h['name']}({h['ticker']}) {h['qty']:,}주" for h in r["manual"]))
+        if not changed_only:
+            lines.append("   봇에게 넘기려면 /adopt 종목코드")
+    if not changed_only:
+        lines.append(f"\n💰 순자산 {r['nav']:,.0f}원 · 예수금 {r['cash']:,.0f}원")
+    return "\n".join(lines)
+
+
+def adopt(ticker: str | None) -> str:
+    """수동으로 산 종목을 봇 포지션으로 넘긴다. 그날부터 손절·추적·보유일 규칙을 적용한다."""
+    if not ticker:
+        return "종목코드를 넣어줘. 예) /adopt 053800"
+    if config.DRY_RUN:
+        return "DRY_RUN 에선 실계좌 종목을 넘길 수 없다."
+    ticker = ticker.strip()
+    if state.get_position(ticker):
+        return f"{ticker} 는 이미 봇이 관리 중이다."
+    h = next((h for h in trading.get_balance()["holdings"] if h["ticker"] == ticker), None)
+    if h is None:
+        return f"계좌에 {ticker} 가 없다. /sync 로 보유를 확인해줘."
+    avg, px = float(h["avg_price"]), float(h["price"] or h["avg_price"])
+    pos = {"ticker": ticker, "name": h["name"], "qty": int(h["qty"]), "entry_price": round(avg), "entry_date": _today(),
+           "entry_order_no": "", "entry_org_no": "", "strategy": "contest", "kind": "momentum",
+           "source": "수동 편입", "signal": {}, "peak_close": max(avg, px),
+           "breakout_price": 0, "take_profit_price": 0, "stop_price": 0, "hold_days": 1, "atr": 0,
+           "filled": True, "dry_run": False}
+    state.add_position(pos)
+    n = sum(1 for p in _positions() if p.get("kind") != "filler")
+    over = f"\n⚠️ 봇 포지션 {n}개 > 슬롯 {config.CT_SLOTS}개 — 팔릴 때까지 새로 안 산다" if n > config.CT_SLOTS else ""
+    return (f"🤝 {h['name']} {int(h['qty']):,}주 봇에게 넘김 (평단 {avg:,.0f}원)\n"
+            f"손절 {avg * (1 - config.CT_STOP_PCT / 100):,.0f}원 · 고점 −{config.CT_TRAIL_PCT:g}% · 오늘부터 {config.CT_HOLD_DAYS}거래일{over}")

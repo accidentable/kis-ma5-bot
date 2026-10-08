@@ -341,6 +341,52 @@ def main() -> int:
     config.TELEGRAM_ALLOWED_CHAT_IDS = []
     contest.put(lock_pct=None, locked=False, pending_exit=[], anchor=100_000_000.0, paper_cash=100_000_000.0)
 
+    print("── 손매매 반영 /sync · /adopt ───────────")
+    for p in contest._positions():
+        state.close_position(p["ticker"], PRICE[p["ticker"]], "테스트 정리")
+    HOLD = {}                                              # 실계좌 보유 (ticker → (qty, 평단))
+    real_bal = lambda: {"holdings": [{"ticker": t, "name": INFO[t][1], "qty": q, "sellable_qty": q, "avg_price": a, "price": PRICE[t],
+                                      "eval_amount": 0, "pnl_amount": 0, "pnl_pct": 0} for t, (q, a) in HOLD.items()],
+                        "cash": 500_000.0, "d2_cash": 0, "total_eval": 0, "net_asset": 900_000.0, "pnl_amount": 0}
+    saved = (trading.get_balance, getattr(trading, "get_today_fills", None))
+    trading.get_balance = real_bal
+    trading.get_today_fills = lambda target=None: [{"ticker": "100010", "side": "sell", "qty": 6, "avg_price": 15_000.0}]
+    config.DRY_RUN = False
+    base = {"strategy": "contest", "kind": "momentum", "peak_close": 14_000, "hold_days": 1, "filled": True}
+    state.add_position({**base, "ticker": "100010", "name": "폭주A", "qty": 6, "entry_price": 14_000, "entry_date": "2000-01-01"})
+    state.add_position({**base, "ticker": "100020", "name": "강세B", "qty": 10, "entry_price": 13_000, "entry_date": "2000-01-01"})
+    state.add_position({**base, "ticker": "100030", "name": "상승C", "qty": 3, "entry_price": 12_000, "entry_date": date.today().isoformat(), "filled": False})
+    contest.put(pending_exit=[{"ticker": "100010", "reason": "손절"}])
+    HOLD.update({"100020": (7, 13_000.0), "200010": (9, 11_000.0)})   # 폭주A 는 앱에서 팔고, 강세B 3주 팔고, 코닥H 9주 삼
+    r = contest.reconcile(include_today=False, announce=False)
+    pos = {p["ticker"]: p for p in contest._positions()}
+    h = {x["ticker"]: x for x in state.get_history(5)}
+    check("계좌에 없는 폭주A → 수동 매도로 이력 (오늘 매도 체결가 15,000)", "100010" not in pos and h.get("100010", {}).get("exit_price") == 15_000.0 and "수동 매도" in h["100010"]["exit_reason"], str(h.get("100010")))
+    check("수량 다른 강세B → 계좌 수량 7주", pos["100020"]["qty"] == 7)
+    check("장중 /sync 는 오늘 미체결 매수(상승C)를 안 건드림", "100030" in pos)
+    check("봇이 모르는 코닥H 는 수동 보유로만", [m["ticker"] for m in r["manual"]] == ["200010"] and "200010" not in pos)
+    check("정리한 종목의 시가 매도 예약도 지움", not contest.get().get("pending_exit"))
+    txt = contest.sync_text(r)
+    check("/sync 문구: 정리 · 수량 · 수동 보유 · /adopt 안내", all(k in txt for k in ("폭주A", "7주", "코닥H", "/adopt")), txt.replace("\n", " / "))
+    n_hist = len(state.get_history(200))
+    r = contest.reconcile(include_today=True, announce=False)
+    check("마감 뒤엔 오늘 미체결 매수를 지우되 이력엔 안 남김", "100030" not in {p["ticker"] for p in contest._positions()}
+          and [x["ticker"] for x in r["unfilled"]] == ["100030"] and len(state.get_history(200)) == n_hist,
+          f"{r['unfilled']} hist {n_hist}->{len(state.get_history(200))}")
+    msg = contest.adopt("200010")
+    pos = {p["ticker"]: p for p in contest._positions()}
+    check("/adopt 코닥H → 봇 포지션 (평단 11,000 · 오늘부터)", pos.get("200010", {}).get("entry_price") == 11_000 and pos["200010"]["entry_date"] == date.today().isoformat() and "넘김" in msg, msg)
+    check("슬롯 넘으면 경고", "슬롯" in msg)
+    check("이미 관리 중 / 계좌에 없음 안내", "이미" in contest.adopt("200010") and "없다" in contest.adopt("100060"))
+    config.TELEGRAM_ALLOWED_CHAT_IDS = [1]
+    check("텔레그램 /sync", "계좌 맞춤" in commands.handle("/sync", 1))
+    config.TELEGRAM_ALLOWED_CHAT_IDS = []
+    trading.get_balance, trading.get_today_fills = saved
+    config.DRY_RUN = True
+    check("DRY_RUN 이면 맞추지 않음", contest.reconcile().get("skipped") == "DRY_RUN")
+    for p in contest._positions():
+        state.close_position(p["ticker"], PRICE[p["ticker"]], "테스트 정리")
+
     print("── 알림 머리말 · 설정 파일 ─────────────")
     got, orig_call = [], notify._call
     notify._call = lambda method, payload: got.append(payload["text"])
